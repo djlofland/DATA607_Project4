@@ -34,3 +34,10 @@ vignettes/*.pdf
 
 # Shiny token, see https://shiny.rstudio.com/articles/shinyapps.html
 rsconnect/
+
+# Rproj files since each branch has its own
+*.Rproj
+
+# Data files since they are taken from Dr. Catlin's website
+/Data/
+
