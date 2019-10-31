@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 ```{r loadLibraries, message=FALSE}
 library(tm)
+library(SnowballC)
 library(data.table)
 setDTthreads(0L)
 ```
@@ -25,33 +26,54 @@ source such as your own spam folder). One example corpus:
 https://spamassassin.apache.org/old/publiccorpus/
 
 # Solution
-```{r Scratch}
-Ham1 <- DirSource("./Data/easy_ham")
-Spam <- DirSource("./Data/spam_2")
-Ham1_c <- VCorpus(Ham1)
-Spam_c <- VCorpus(Spam)
-```
+## Notes
+### Headers
+Header should not have blank lines per
+[RFC 5322, Section 2.2](https://tools.ietf.org/html/rfc5322). So look for first
+blank line.
 
+Remove headers since they will dominate the bag (Received: etc.)
+
+# List files
 ```{r}
-transformations <- list(removePunctuation,
-                        removeNumbers,
-                        content_transformer(tolower))
-Ham <- tm_map(Ham1_c, FUN = tm_reduce, tmFuns = transformations)
-Ham <- tm_map(Ham, removeWords, stopwords("english"))
-Ham <- tm_map(Ham, stripWhitespace)
-Ham <- tm_map(Ham, stemDocument)
-
-meta(Ham, tag = "class", type = "indexed") <- "ham"
-
-Spam <- tm_map(Spam_c, stripWhitespace)
-Spam <- tm_map(Spam, content_transformer(tolower))
-Spam <- tm_map(Spam, removeNumbers)
-Spam <- tm_map(Spam, removePunctuation)
-Spam <- tm_map(Spam, )
-Spam <- tm_map(Spam, stemDocument)
-meta(Spam, tag = "class", type = "indexed") <- "spam"
+sp_files <- list.files("./Data/spam_2", full.names = TRUE)
+h_files <- list.files("./Data/easy_ham", full.names = TRUE)
 ```
 
+# Build corpus
 ```{r}
-
+build_Corpus <- function(files, class){
+  for (i in seq_along(files)) {
+    raw_text <- readLines(files[i])
+    em_length <- length(raw_text)
+    body_start <- min(grep("^$", raw_text, fixed = FALSE)) + 1L
+    em_body <- paste(raw_text[body_start:em_length],
+                     sep = "", collapse = " ")
+    if (i == 1L) {
+      ret_Corpus <- VCorpus(VectorSource(em_body))
+    } else {
+      tmp_Corpus <- VCorpus(VectorSource(em_body))
+      ret_Corpus <- c(ret_Corpus, tmp_Corpus)
+    }
+  }
+  meta(ret_Corpus, tag = "class", type = "indexed") <- class
+  return(ret_Corpus)
+}
 ```
+
+
+# Clean Corpus
+```{r}
+clean_Corpus <- function(corpus){
+  corpus <- tm_map(corpus, removePunctuation,
+                   preserve_intra_word_contractions = TRUE,
+                   preserve_intra_word_dashes = TRUE)
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, stemDocument)
+  corpus <- tm_map(corpus, stripWhitespace)
+  return(corpus)
+}
+```
+
