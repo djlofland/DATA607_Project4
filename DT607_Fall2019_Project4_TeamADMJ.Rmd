@@ -394,7 +394,7 @@ confusionMatrix(NB2v, clean_val_type)
 ```
 
 # Epilogue
-```{stopParallel}
+```{r epilogue}
 sessionInfo()
 stopCluster(cl)
 ```
