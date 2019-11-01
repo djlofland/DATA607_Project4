@@ -41,3 +41,6 @@ rsconnect/
 # Data files since they are taken from Dr. Catlin's website
 /Data/
 
+# html and pdf files
+*.htm*
+*.pdf
