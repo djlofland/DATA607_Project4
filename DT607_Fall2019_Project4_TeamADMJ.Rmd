@@ -229,10 +229,20 @@ Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we wil
 in the dictionary:
 ```{r ft}
 ft <- colSums(as.matrix(dtm_terms))
-knitr::kable(head(ft[order(ft, decreasing = TRUE)], n = 20L))
+ft_df <- data.frame(term = names(ft), count = as.integer(ft))
+knitr::kable(head(ft_df[order(ft, decreasing = TRUE), ], n = 20L),
+             row.names = FALSE)
 ```
 
-### Build training set
+Here is a histogram of word frequency using the
+[Freedman-Diaconis](https://en.wikipedia.org/wiki/Freedman%E2%80%93Diaconis_rule)
+rule for binwidth.
+```{r freqhist}
+bw_fd <- 2 * IQR(ft_df$count) / (dim(ft_df)[[1]]) ^ (1/3)
+ggplot(ft_df, aes(x = count)) + geom_histogram(binwidth = bw_fd) + xlab("Term")
+```
+
+### Building the Training Set
 ```{r buildSets}
 # sample is to randomize the observations
 clean_train <- sample(CleanCorpus(raw_train))
@@ -251,7 +261,7 @@ dtm_train_S <- DocumentTermMatrix(clean_train)
 dtm_train_S
 ```
 
-## Build validation set
+### Building the Validation Set
 ```{r val}
 clean_val <- sample(CleanCorpus(raw_val))
 clean_val_type <- unlist(meta(clean_val, tag = "class"))
@@ -261,6 +271,15 @@ dtm_val <- DocumentTermMatrix(clean_val,
                               control = list(dictionary = freq_terms))
 ```
 
+### Building the Testing Set
+```{r val}
+clean_test <- sample(CleanCorpus(raw_test))
+clean_test_type <- unlist(meta(raw_test, tag = "class"))
+attributes(clean_test_type) <- NULL
+clean_test_type <- as.factor(clean_test_type)
+dtm_test <- DocumentTermMatrix(clean_test,
+                              control = list(dictionary = freq_terms))
+```
 
 ## Last step
 The `caret` package works more smoothly if we switch the 1's and 0's to factors.
@@ -271,6 +290,7 @@ factorize <- function(x) {
 }
 train_sp <- apply(X = dtm_train, MARGIN = 2L, FUN = factorize)
 val_sp <- apply(X = dtm_val, MARGIN = 2L, FUN = factorize)
+test_sp <- apply(X = dtm_test, MARGIN = 2L, FUN = factorize)
 ```
 
 ## Train Models
@@ -280,5 +300,7 @@ tr_ctrl <- trainControl(method = "LGOCV", number = 2L, p = 0.6667,
                         classProbs = TRUE, summaryFunction = twoClassSummary,
                         sampling = 'up')
 NB <- train(x = as.matrix(dtm_train), y = clean_train_type, method = "nb",
-            trControl = tr_ctrl, preProcess = "nzv", metric = "ROC")
+            trControl = tr_ctrl, metric = "ROC")
+NB2 <- train(x = train_sp, y = clean_train_type, method = "nb",
+            trControl = tr_ctrl, metric = "ROC")
 ```
