@@ -8,12 +8,6 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-```{r loadLibraries, message=FALSE}
-set.seed(12)
-library(tm)
-library(SnowballC)
-library(caret)
-```
 
 # Assignment
 It can be useful to be able to classify new "test" documents using already
@@ -62,6 +56,18 @@ power at all like "and" or "the". These are often called *stop words*.
 In the following document, all user-created variables will be in `snake_case`
 and all user-created functions will be in `CamelCase`. Unfortunately, the `tm`
 packages uses `camelCase` for its functions. wE aPoLoGIze fOr anY IncoNVenIence.
+
+### Load Libraries and Set Seed
+```{r loadLibraries, message=FALSE}
+set.seed(12)
+library(doParallel)
+cl <- makePSOCKcluster(6L)
+registerDoParallel(cl)
+library(tm)
+library(SnowballC)
+library(caret)
+library(wordcloud)
+```
 
 ### List files
 The files were downloaded from the link above, and the `spam_2` and `easy_ham`
@@ -242,8 +248,15 @@ bw_fd <- 2 * IQR(ft_df$count) / (dim(ft_df)[[1]]) ^ (1/3)
 ggplot(ft_df, aes(x = count)) + geom_histogram(binwidth = bw_fd) + xlab("Term")
 ```
 
+Finally, a wordcloud of the terms:
+```{r ftwc}
+wordcloud(ft_df$term,ft_df$count, scale = c(4, 0.6), min.freq = 100L,
+          colors = brewer.pal(5, "Dark2"), random.color = TRUE,
+          random.order = TRUE, rot.per = 0, fixed.asp = FALSE)
+```
+
 ### Building the Training Set
-```{r buildSets}
+```{r trainset}
 # sample is to randomize the observations
 clean_train <- sample(CleanCorpus(raw_train))
 clean_train_type <- unlist(meta(clean_train, tag = "class"))
@@ -262,7 +275,7 @@ dtm_train_S
 ```
 
 ### Building the Validation Set
-```{r val}
+```{r valset}
 clean_val <- sample(CleanCorpus(raw_val))
 clean_val_type <- unlist(meta(clean_val, tag = "class"))
 attributes(clean_val_type) <- NULL
@@ -272,35 +285,116 @@ dtm_val <- DocumentTermMatrix(clean_val,
 ```
 
 ### Building the Testing Set
-```{r val}
+```{r testset}
 clean_test <- sample(CleanCorpus(raw_test))
-clean_test_type <- unlist(meta(raw_test, tag = "class"))
+clean_test_type <- unlist(meta(clean_test, tag = "class"))
 attributes(clean_test_type) <- NULL
 clean_test_type <- as.factor(clean_test_type)
 dtm_test <- DocumentTermMatrix(clean_test,
                               control = list(dictionary = freq_terms))
 ```
 
-## Last step
-The `caret` package works more smoothly if we switch the 1's and 0's to factors.
-```{r}
-factorize <- function(x) {
-  x <- ifelse(x > 0, TRUE, FALSE)
-  x <- factor(x, levels = c(TRUE, FALSE), labels = c("Found", "Not Found"))
-}
-train_sp <- apply(X = dtm_train, MARGIN = 2L, FUN = factorize)
-val_sp <- apply(X = dtm_val, MARGIN = 2L, FUN = factorize)
-test_sp <- apply(X = dtm_test, MARGIN = 2L, FUN = factorize)
+### Last step
+All the classification algorithms work much better if the values are factors and
+not numbers. So we will convert them as we create the model matrices.
+```{r modelprep}
+CreateModelMatrix <- function(dtm) {
+  apply(as.matrix(dtm),
+        MARGIN = 2,
+        FUN = function(x) factor(ifelse(x > 0, 1L, 0L),
+                                 levels = c(0L, 1L),
+                                 labels = c("Not Found", "Found")))
+  }
+train_sp <- CreateModelMatrix(dtm_train)
+val_sp <- CreateModelMatrix(dtm_val)
+test_sp <- CreateModelMatrix(dtm_test)
 ```
 
 ## Train Models
+### Overview
+Now we can train the models. The process will generally follow the following
+path:
+
+  1. Select a model family (logistic regression, random forest, etc.)
+  1. Use the `caret` package on the training set to pick "best" model givem the
+  supplied control, preprocessing, or other [hyper-]parameters. This may include
+  some level of validation
+  1. Switch the hyperparameters, train again, and compare using validation set
+  1. Select "best" model from family
+  1. Repeat with other families
+  1. Compare performance of final selections using testing/holdout set
+  1. Take a well-deserved vacation
+  
+As the `caret` package serves as an umbrella for over 230 model types living in
+different packages, we may select a less-sophisticated version of a family if it
+reduces code complexity and migraine propensity. Forgive us as well if we don't
+explain every family and every selection. Below we create the model matrices
+which will be passed to `caret`.
+
+
+### Logistic Regression
+```{r logistic, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# 10-fold CV
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = twoClassSummary)
+LogR1 <- train(x = train_sp, y = clean_train_type, method = "glm",
+              family = "binomial", trControl = tr_ctrl, metric = "ROC")
+LogR1
+LogR1v <- predict(LogR1, val_sp)
+confusionMatrix(LogR1v, clean_val_type)
+
+# 5 iterations of 5-fold CV
+tr_ctrl <- trainControl(method = "repeatedcv", number = 5L, repeats = 5L,
+                        classProbs = TRUE, summaryFunction = twoClassSummary)
+LogR2 <- train(x = train_sp, y = clean_train_type, method = "glm",
+              family = "binomial", trControl = tr_ctrl, metric = "ROC")
+LogR2
+LogR2v <- predict(LogR2, val_sp)
+confusionMatrix(LogR2v, clean_val_type)
+
+# Monte-Carlo Cross validation using 75/25 and 10 iterations
+tr_ctrl <- trainControl(method = "LGOCV", number = 5L, p = 0.75,
+                        classProbs = TRUE, summaryFunction = twoClassSummary)
+LogR3 <- train(x = train_sp, y = clean_train_type, method = "glm",
+              family = "binomial", trControl = tr_ctrl, metric = "ROC")
+LogR3
+LogR3v <- predict(LogR3, val_sp)
+confusionMatrix(LogR3v, clean_val_type)
+
+```
+
+As all of the validation sets had the same performance, our selected model will
+be the simplest.
+
 ### Naive Bayes
-```{r, message=FALSE, error=FALSE, warning=FALSE}
-tr_ctrl <- trainControl(method = "LGOCV", number = 2L, p = 0.6667,
-                        classProbs = TRUE, summaryFunction = twoClassSummary,
-                        sampling = 'up')
-NB <- train(x = as.matrix(dtm_train), y = clean_train_type, method = "nb",
-            trControl = tr_ctrl, metric = "ROC")
+```{r naiveb, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# 10-fold CV
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = twoClassSummary)
+NB1 <- train(x = train_sp, y = clean_train_type, method = "nb",
+             tuneGrid = expand.grid(fL = seq(0, 1, 0.2),
+                                   usekernel = c(TRUE, FALSE),
+                                   adjust = seq(0, 1, 0.2)),
+             trControl = tr_ctrl, metric = "ROC")
+NB1
+NB1v <- predict(NB1, val_sp)
+confusionMatrix(NB1v, clean_val_type)
+
+# Monte-Carlo Cross validation using 2:1 and 10 iterations
+tr_ctrl <- trainControl(method = "LGOCV", number = 5L, p = 0.75,
+                        classProbs = TRUE, summaryFunction = twoClassSummary)
 NB2 <- train(x = train_sp, y = clean_train_type, method = "nb",
-            trControl = tr_ctrl, metric = "ROC")
+             tuneGrid = expand.grid(fL = seq(0, 1, 0.2),
+                                   usekernel = c(TRUE, FALSE),
+                                   adjust = seq(0, 1, 0.2)),
+             trControl = tr_ctrl, metric = "ROC")
+NB2
+NB2v <- predict(NB2, val_sp)
+confusionMatrix(NB2v, clean_val_type)
+```
+
+# Epilogue
+```{stopParallel}
+sessionInfo()
+stopCluster(cl)
 ```
