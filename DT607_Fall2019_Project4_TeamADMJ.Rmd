@@ -58,8 +58,12 @@ problem is also addressed by removing words so common as to have no predictive
 power at all like "and" or "the". These are often called *stop words*.
 
 ## Code and Process
-### 
-## List files
+### Style
+In the following document, all user-created variables will be in `snake_case`
+and all user-created functions will be in `CamelCase`. Unfortunately, the `tm`
+packages uses `camelCase` for its functions. wE aPoLoGIze fOr anY IncoNVenIence.
+
+### List files
 The files were downloaded from the link above, and the `spam_2` and `easy_ham`
 sets were selected for analysis. These were unzipped so that each email is its
 own file in the directory.
@@ -87,7 +91,7 @@ a single character vector, the `paste` function is used with the appropriate
 `sep` and `collapse` values. The class of the document is passed as a parameter
 to the `Build
 
-```{r}
+```{r rawCorpus}
 BuildCorpus <- function(files, class){
   for (i in seq_along(files)) {
     raw_text <- readLines(files[i])
@@ -105,10 +109,7 @@ BuildCorpus <- function(files, class){
   meta(ret_Corpus, tag = "class", type = "indexed") <- class
   return(ret_Corpus)
 }
-```
 
-### Creating the Raw Corpus
-```{r rawcorp}
 h_corp_raw <- BuildCorpus(h_files, "ham")
 s_corp_raw <- BuildCorpus(s_files, "spam")
 ```
@@ -223,15 +224,16 @@ dtm_terms <- DocumentTermMatrix(clean_term_corp, control = list(
   bounds = list(global = c(100L, Inf))))
 freq_terms <- Terms(dtm_terms)
 ```
-Here are the top 20 terms out of the `r length(freq_terms)` terms we will use
+
+Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we will use
 in the dictionary:
 ```{r ft}
 ft <- colSums(as.matrix(dtm_terms))
 knitr::kable(head(ft[order(ft, decreasing = TRUE)], n = 20L))
 ```
 
-### Build the actual training, validation, and testing sets
-```{r}
+### Build training set
+```{r buildSets}
 # sample is to randomize the observations
 clean_train <- sample(CleanCorpus(raw_train))
 clean_train_type <- unlist(meta(clean_train, tag = "class"))
@@ -259,6 +261,7 @@ dtm_val <- DocumentTermMatrix(clean_val,
                               control = list(dictionary = freq_terms))
 ```
 
+
 ## Last step
 The `caret` package works more smoothly if we switch the 1's and 0's to factors.
 ```{r}
@@ -266,8 +269,8 @@ factorize <- function(x) {
   x <- ifelse(x > 0, TRUE, FALSE)
   x <- factor(x, levels = c(TRUE, FALSE), labels = c("Found", "Not Found"))
 }
-train_sp <- apply(X = dtm_train_sp, MARGIN = 2L, FUN = factorize)
-val_sp <- apply(X = dtm_val_sp, MARGIN = 2L, FUN = factorize)
+train_sp <- apply(X = dtm_train, MARGIN = 2L, FUN = factorize)
+val_sp <- apply(X = dtm_val, MARGIN = 2L, FUN = factorize)
 ```
 
 ## Train Models
