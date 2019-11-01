@@ -372,9 +372,9 @@ be the simplest.
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
                         summaryFunction = twoClassSummary)
 NB1 <- train(x = train_sp, y = clean_train_type, method = "nb",
-             tuneGrid = expand.grid(fL = seq(0, 1, 0.2),
+             tuneGrid = expand.grid(fL = c(0, 0.5, 1),
                                    usekernel = c(TRUE, FALSE),
-                                   adjust = seq(0, 1, 0.2)),
+                                   adjust = c(0, 0.5, 1)),
              trControl = tr_ctrl, metric = "ROC")
 NB1
 NB1v <- predict(NB1, val_sp)
@@ -384,9 +384,9 @@ confusionMatrix(NB1v, clean_val_type)
 tr_ctrl <- trainControl(method = "LGOCV", number = 5L, p = 0.75,
                         classProbs = TRUE, summaryFunction = twoClassSummary)
 NB2 <- train(x = train_sp, y = clean_train_type, method = "nb",
-             tuneGrid = expand.grid(fL = seq(0, 1, 0.2),
+             tuneGrid = expand.grid(fL = c(0, 0.5, 1),
                                    usekernel = c(TRUE, FALSE),
-                                   adjust = seq(0, 1, 0.2)),
+                                   adjust = c(0, 0.5, 1)),
              trControl = tr_ctrl, metric = "ROC")
 NB2
 NB2v <- predict(NB2, val_sp)
