@@ -3,7 +3,9 @@ title: "DT 607---Fall 2019---Project 4"
 author: "Team ADMJ"
 date: "11/1/2019"
 output:
-  html_document: default
+  html_document:
+    toc: true
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
@@ -15,8 +17,8 @@ It can be useful to be able to classify new "test" documents using already
 classified "training" documents.  A common example is using a corpus of labeled
 spam and ham (non-spam) e-mails to predict whether or not a new document is spam.  
 
-For this project, you can start with a spam/ham dataset, then predict the class
-of new documents (either withheld from the training dataset or from another
+For this project, you can start with a spam/ham data-set, then predict the class
+of new documents (either withheld from the training data-set or from another
 source such as your own spam folder). One example corpus:
 https://spamassassin.apache.org/old/publiccorpus/
 
@@ -78,7 +80,7 @@ library(wordcloud)
 The files were downloaded from the link above, and the `spam_2` and `easy_ham`
 sets were selected for analysis. These were unzipped so that each email is its
 own file in the directory.
-```{r}
+```{r listFiles}
 s_files <- list.files("./Data/spam_2", full.names = TRUE)
 h_files <- list.files("./Data/easy_ham", full.names = TRUE)
 h_len <- length(h_files)
@@ -97,7 +99,7 @@ next line. That is what is searched for by the regex pattern `"^$"` in the
 function below.
 
 ### Raw Corpus
-The `readLines` function reads each line as a seperate vector. To turn this into
+The `readLines` function reads each line as a separate vector. To turn this into
 a single character vector, the `paste` function is used with the appropriate
 `sep` and `collapse` values. The class of the document is passed as a parameter
 to the `Build
@@ -126,8 +128,8 @@ s_corp_raw <- BuildCorpus(s_files, "spam")
 ```
 
 ### Cleaning the Corpus
-We used many of the default cleaning tools in the `tm` package to peform
-standard adjustments like lowercasing, removing numbers, etc. We made two
+We used many of the default cleaning tools in the `tm` package to perform
+standard adjustments like lower-casing, removing numbers, etc. We made two
 non-native adjustments. First we stripped out anything that looked like a URL.
 This needed to be done prior to removing punctuation, of course. We also added a
 few words to the removal list which we think have little predictive power due to
@@ -142,7 +144,7 @@ wordStem(c('run', 'running', 'ran', 'runt'), language = 'porter')
 ```
 
 The complete cleaning rules are in the `CleanCorpus` function.
-```{r}
+```{r cleanCorpus}
 # https://stackoverflow.com/questions/47410866/r-inspect-document-term-matrix-results-in-error-repeated-indices-currently-not
 CleanCorpus <- function(corpus){
   overused_words <- c("ok", 'okay', 'day', "might", "bye", "hello", "hi",
@@ -176,7 +178,7 @@ triplet, and once terms are removed, it becomes impossible for R to print
 properly.
 
 The `removeSparseTerms` is intuitively more appealing as it measures frequency
-by document, and not across documents. However, applying that to three seperate
+by document, and not across documents. However, applying that to three separate
 corpuses would result in the validation and testing sets not having the same
 words as the training set. Therefore, the build-up method will be used, but used
 by finding the remaining terms after calling remove.
@@ -188,17 +190,12 @@ Hastie & Tibshirani, in their seminal work ESL, suggest breaking ones data into
 three parts: 50% training, 25% validation, and 25% testing. Confusingly, some
 literature uses "test" for the validation set and "holdout" for the test set.
 Regardless, the idea is that you train your model on 50% of the data, and use
-25% of the data (the validation set) to refine any hyperparameters of the model.
+25% of the data (the validation set) to refine any hyper-parameters of the model.
 You do this for each model, and then once all the models are tuned as best
 possible, they are compared with each other by their performance on the
 heretofore unused testing/holdout set. The `SplitSample` function was used to
 split the data at the start.
-
-However, the `caret` package has validation built-in to most of its model
-selection and tuning procedures, (so we will break this data into two parts: 75%
-for training/validation and 25% for testing (holdout).) OR DO WE VALIDATE ANYWAY
-
-```{r, splitsets}
+```{r splitsets}
 SplitSample <- function(n) {
   if (n %% 4 == 0) {
     n_split <- sample(c(rep("train", n / 2),
@@ -236,7 +233,7 @@ freq_terms <- Terms(dtm_terms)
 
 Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we will use
 in the dictionary:
-```{r ft}
+```{r freqTerms}
 ft <- colSums(as.matrix(dtm_terms))
 ft_df <- data.frame(term = names(ft), count = as.integer(ft))
 knitr::kable(head(ft_df[order(ft, decreasing = TRUE), ], n = 20L),
@@ -251,7 +248,7 @@ bw_fd <- 2 * IQR(ft_df$count) / (dim(ft_df)[[1]]) ^ (1/3)
 ggplot(ft_df, aes(x = count)) + geom_histogram(binwidth = bw_fd) + xlab("Term")
 ```
 
-Finally, a wordcloud of the terms appearing at least 250 times:
+Finally, a wordcloud of the stemmed terms appearing at least 250 times:
 ```{r ftwc, message=FALSE, warning=FALSE, error=FALSE}
 wordcloud(ft_df$term,ft_df$count, scale = c(3, 0.6), min.freq = 250L,
           colors = brewer.pal(5, "Dark2"), random.color = TRUE,
@@ -264,7 +261,6 @@ wordcloud(ft_df$term,ft_df$count, scale = c(3, 0.6), min.freq = 250L,
 clean_train <- sample(CleanCorpus(raw_train))
 clean_train_type <- unlist(meta(clean_train, tag = "class"))
 attributes(clean_train_type) <- NULL
-clean_train_type <- as.factor(clean_train_type)
 dtm_train <- DocumentTermMatrix(clean_train,
                                 control = list(dictionary = freq_terms))
 dtm_train
@@ -282,7 +278,6 @@ dtm_train_S
 clean_val <- sample(CleanCorpus(raw_val))
 clean_val_type <- unlist(meta(clean_val, tag = "class"))
 attributes(clean_val_type) <- NULL
-clean_val_type <- as.factor(clean_val_type)
 dtm_val <- DocumentTermMatrix(clean_val,
                               control = list(dictionary = freq_terms))
 ```
@@ -292,7 +287,6 @@ dtm_val <- DocumentTermMatrix(clean_val,
 clean_test <- sample(CleanCorpus(raw_test))
 clean_test_type <- unlist(meta(clean_test, tag = "class"))
 attributes(clean_test_type) <- NULL
-clean_test_type <- as.factor(clean_test_type)
 dtm_test <- DocumentTermMatrix(clean_test,
                               control = list(dictionary = freq_terms))
 ```
@@ -304,8 +298,11 @@ understands. The response vector must be a factor for classification, which is
 why all three `clean_x_type` vectors were created as factors.
 ```{r modelprep}
 train_m <- as.matrix(dtm_train)
+clean_train_type <- factor(clean_train_type, levels = c("spam", "ham"))
 val_m <- as.matrix(dtm_val)
+clean_val_type <- factor(clean_val_type, levels = c("spam", "ham"))
 test_m <- as.matrix(dtm_test)
+clean_test_type <- factor(clean_test_type, levels = c("spam", "ham"))
 ```
 
 ## Train Models
@@ -314,10 +311,10 @@ Now we can train the models. The process will generally follow the following
 path:
 
   1. Select a model family (logistic regression, random forest, etc.)
-  1. Use the `caret` package on the training set to pick "best" model givem the
-  supplied control, preprocessing, or other [hyper-]parameters. This may include
+  1. Use the `caret` package on the training set to pick "best" model given the
+  supplied control, pre-processing, or other [hyper-]parameters. This may include
   some level of validation
-  1. Switch the hyperparameters, train again, and compare using validation set
+  1. Switch the hyper-parameters, train again, and compare using validation set
   1. Select "best" model from family
   1. Repeat with other families
   1. Compare performance of final selections using testing/holdout set
@@ -329,11 +326,31 @@ reduces code complexity and migraine propensity. Forgive us as well if we don't
 explain every family and every selection. Below we create the model matrices
 which will be passed to `caret`.
 
-Experimentation was done with many of the tunining parameters. However, most
+Experimentation was done with many of the tuning parameters. However, most
 increases in accuracy came at an inordinate expense of time. Therefore, for the
 purposes of this exercise, many of the more advantageous options will be
 limited. For example, cross-validation will be limited to single-pass ten-fold.
 In production, one should be more vigorous, of course.
+
+### Optimization Metric
+Usually, AUC, a function of ROC, is used for classification problems. However,
+for imbalanced data sets it is suggested to use one of precision, recall, or F1
+instead. See
+[here](https://towardsdatascience.com/accuracy-precision-recall-or-f1-331fb37c5cb9),
+[here](https://towardsdatascience.com/beyond-accuracy-precision-and-recall-3da06bea9f6c),
+or [here](https://acutecaretesting.org/en/articles/precision-recall-curves-what-are-they-and-how-are-they-used)
+for examples.
+
+In our case, the data set is imbalanced, and the cost of a false positive
+(classifying ham as spam) is greater than a false negative. Originally, we
+selected precision as the metric, as hitting the "junk" button for something in
+your inbox is less annoying than having your boss's email sit in your junk
+folder.
+
+However, as we trained models, we found some fascinating results. In one of the
+random forest models, the algorithm found a better model with one less false
+positive, at the expense of 61 more false negatives. Therefore, we decided to
+redo the tests using the balanced F1 as the optimization metric.
 
 ### Logistic Regression
 This is the classic good-old logistic regression in R. There are no hyper/tuning
@@ -342,88 +359,152 @@ cross-validation.
 ```{r logistic, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 # 10-fold CV
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
-                        summaryFunction = twoClassSummary)
+                        summaryFunction = prSummary)
 LogR1 <- train(x = train_m, y = clean_train_type, method = "glm",
-              family = "binomial", trControl = tr_ctrl, metric = "ROC")
+              family = "binomial", trControl = tr_ctrl, metric = "F")
 LogR1
 LogR1v <- predict(LogR1, val_m)
-confusionMatrix(LogR1v, clean_val_type)
+confusionMatrix(LogR1v, clean_val_type, mode = "prec_recall", positive = "spam")
 
 # Monte-Carlo Cross validation using 75/25 and 5 iterations
 tr_ctrl <- trainControl(method = "LGOCV", number = 10L, p = 0.75,
-                        classProbs = TRUE, summaryFunction = twoClassSummary)
+                        classProbs = TRUE, summaryFunction = prSummary)
 LogR2 <- train(x = train_m, y = clean_train_type, method = "glm",
-              family = "binomial", trControl = tr_ctrl, metric = "ROC")
+              family = "binomial", trControl = tr_ctrl, metric = "F")
 LogR2
 LogR2v <- predict(LogR2, val_m)
-confusionMatrix(LogR2v, clean_val_type)
-
+confusionMatrix(LogR2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
 Both versions performed the same on the validation set. As the first has a
-slightly better AUC (ROC here is the area under the curve) we will select
-that one.
+slightly better F-score, we will select that one.
 
 ### Random Forest
 The `ranger` package is used as the random forest engine due to its being
 optimized for higher dimensions. With 
 ```{r rfA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
-                        summaryFunction = twoClassSummary)
+                        summaryFunction = prSummary)
 RF1 <- train(x = train_m, y = clean_train_type, method = 'ranger',
-             trControl = tr_ctrl, metric = "ROC", tuneLength = 5L)
+             trControl = tr_ctrl, metric = "F", tuneLength = 5L)
 RF1
 RF1v <- predict(RF1, val_m)
-confusionMatrix(RF1v, clean_val_type)
+confusionMatrix(RF1v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
-As the best `mtry` value was close to 8, perhaps some more fine tuning can be
-done:
+Let's do a bit wider search among tuning parameters.
 ```{r rfB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
-rf_grid <- expand.grid(mtry = seq(1, 12),
+rf_grid <- expand.grid(mtry = seq(8, 48, 4),
                        splitrule = c('gini', 'extratrees'),
-                       min.node.size = 1L)
+                       min.node.size = c(1L, 10L))
 RF2 <- train(x = train_m, y = clean_train_type, method = 'ranger',
-             trControl = tr_ctrl, metric = "ROC", tuneGrid = rf_grid)
+             trControl = tr_ctrl, metric = "F", tuneGrid = rf_grid)
 RF2
 RF2v <- predict(RF2, val_m)
-confusionMatrix(RF2v, clean_val_type)                    
+confusionMatrix(RF2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
-
-Interestingly, the first model performed better at validation even though the
-second had a higher AUC, so we will use that one. This may be an example of
-overfitting.
 
 ### Naive Bayes
 ```{r nbA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
-tr_ctrl <- trainControl(method = "cv", number = 10L,
-                        classProbs = TRUE, summaryFunction = twoClassSummary)
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
 NB1 <- train(x = train_m, y = clean_train_type, method = "nb",
-             trControl = tr_ctrl, metric = "ROC")
+             trControl = tr_ctrl, metric = "F")
 NB1
 NB1v <- predict(NB1, val_m)
-confusionMatrix(NB1v, clean_val_type)
+confusionMatrix(NB1v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
-This is an *awfully* performing model. Maybe some tuning may help.
+This is an *awfully* performing model. Naive Bayes is known to be very sensitive
+to class imbalances. Let's implement up-sampling and a wider search. 
 ```{r nbB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
-nb_grid <- expand.grid(usekernel = c(TRUE, FALSE),
-                       fl = c(0, 0.33, 0.67, 1),
-                       adjust = c(0, 0.33, 0.67, 1))
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary, sampling = 'up')
+nb_grid <- expand.grid(usekernel = TRUE,
+                       fL = seq(0.25, 0.75, 0.05),
+                       adjust = 1)
 NB2 <- train(x = train_m, y = clean_train_type, method = "nb",
-             trControl = tr_ctrl, metric = "ROC", tuneGrid = nb_grid)
-NB1
+             trControl = tr_ctrl, metric = "F", tuneGrid = nb_grid)
+NB2
+NB2v <- predict(NB2, val_m)
+confusionMatrix(NB2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
-```{r GBM, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
-tr_ctrl <- trainControl(method = "repeatedcv", number = 10L, repeats = 10L,
-                        classProbs = TRUE, summaryFunction = twoClassSummary)
-tgrid <- expand.grid(n.trees = 100,
-                     interaction.depth = 1,
+
+Results are still **miserable**. Maybe this wasn't used properly.
+
+### Neural Network
+```{r NN1, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+NN1 <- train(x = train_m, y = clean_train_type, method = "nnet", trace = FALSE,
+             trControl = tr_ctrl, metric = "F", tuneLength = 5L, maxit = 250L)
+NN1
+NN1v <- predict(NN1, val_m)
+confusionMatrix(NN1v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+Some light tuning:
+
+```{r NN2, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+nn_grid <- expand.grid(size = 1L, decay = c(0.99, seq(0.95, 0.05, -0.05), 0.01))
+NN2 <- train(x = train_m, y = clean_train_type, method = "nnet", trace = FALSE,
+             trControl = tr_ctrl, metric = "F", tuneGrid = nn_grid,
+             maxit = 250L)
+NN2
+NN2v <- predict(NN2, val_m)
+confusionMatrix(NN2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+### Gradient Boosted Machines
+```{r GBM1, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+GBM1 <- train(x = train_m, y = clean_train_type, method = "gbm", verbose = FALSE,
+              trControl = tr_ctrl, tuneLength = 5L, metric = "F")
+GBM1v <- predict(GBM1, val_m)
+confusionMatrix(GBM1v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+This model looks really good. Let's throw a little extra fine-tuning in. After
+running a wide-scale grid, the best option is selected below, so that the entire
+grid doesn't have to rerun every time.
+```{r GBM2, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+gbm_grid <- expand.grid(n.trees = 400L,
+                     interaction.depth = 7L,
                      shrinkage = 0.1,
-                     n.minobsinnode = 1)
-GBM1 <- train(x = train_sp, y = clean_train_type, method = "gbm",
-              trControl = tr_ctrl, tuneGrid = tgrid, metric = "ROC")
+                     n.minobsinnode = 10L)
+GBM2 <- train(x = train_m, y = clean_train_type, method = "gbm", verbose = FALSE,
+              trControl = tr_ctrl, tuneGrid = gbm_grid, metric = "F")
+GBM2
+GBM2v <- predict(GBM2, val_m)
+confusionMatrix(GBM2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
+
+### Other models
+With over 230 possible models, there are many more options to train, like
+XGBoost, Neural Networks, Bayesian Regression, Support Vector Machines, etc.
+
+## Test Models
+The best models in the above categories will now be compared against the
+testing/holdout set:
+```{r test, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+LogRt <- predict(LogR1, test_m)
+RFt <- predict(RF1, test_m)
+NNt <- predict(NN1, test_m)
+NBt <- predict(NB2, test_m) # For laughs
+GBMt <- predict(GBM2, test_m)
+confusionMatrix(LogRt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(RFt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(NNt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(NBt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(GBMt, clean_test_type, mode = "prec_recall", positive = "spam")
+```
+
+From these models, while the logistic had no false negatives---a recall of 1---it
+did so by coding 57 good emails as spam. The remaining models all did quite well,
+but the winner is the random forest model, with the highest F-score and fewest
+miscategorized emails of any type.
+
 # Epilogue
 ```{r epilogue}
 sessionInfo()
