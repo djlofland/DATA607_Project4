@@ -2,7 +2,8 @@
 title: "DT 607---Fall 2019---Project 4"
 author: "Team ADMJ"
 date: "11/1/2019"
-output: html_document
+output:
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -36,6 +37,10 @@ mining, the `RTextTools` package was recently removed from CRAN, and personal
 communication by one of us with the author (who is now building the news feed at 
 [LinkedIn](https://www.linkedin.com/in/timjurka/)) confirmed that the package
 is abandonware.
+
+Lastly, we understand that the object of this exercise is not to build an
+excellent predictor but to demonstrate the necessary knowledge required to build
+classification algorithms.
 
 ### Document-Term Matrix
 A document-term matrix (DTM) is the model matrix used in natural language
@@ -126,10 +131,8 @@ standard adjustments like lowercasing, removing numbers, etc. We made two
 non-native adjustments. First we stripped out anything that looked like a URL.
 This needed to be done prior to removing punctuation, of course. We also added a
 few words to the removal list which we think have little predictive power due to
-their overuse.
-
-We considered removing all punctuation, but decided to leave intra-word
-contractions.
+their overuse. We considered removing all punctuation, but decided to leave both
+intra-word contractions and internal punctuation.
 
 Lastly, we used the `SnowballC` package to stem the document. This process
 tries to identify common roots shared by similar words and then treat them as
@@ -248,9 +251,9 @@ bw_fd <- 2 * IQR(ft_df$count) / (dim(ft_df)[[1]]) ^ (1/3)
 ggplot(ft_df, aes(x = count)) + geom_histogram(binwidth = bw_fd) + xlab("Term")
 ```
 
-Finally, a wordcloud of the terms:
-```{r ftwc}
-wordcloud(ft_df$term,ft_df$count, scale = c(4, 0.6), min.freq = 100L,
+Finally, a wordcloud of the terms appearing at least 250 times:
+```{r ftwc, message=FALSE, warning=FALSE, error=FALSE}
+wordcloud(ft_df$term,ft_df$count, scale = c(3, 0.6), min.freq = 250L,
           colors = brewer.pal(5, "Dark2"), random.color = TRUE,
           random.order = TRUE, rot.per = 0, fixed.asp = FALSE)
 ```
@@ -295,19 +298,14 @@ dtm_test <- DocumentTermMatrix(clean_test,
 ```
 
 ### Last step
-All the classification algorithms work much better if the values are factors and
-not numbers. So we will convert them as we create the model matrices.
+The `caret` package requires its input to be a numeric matrix. As the DTM is a
+special form of sparse matrix, we need to convert it to something `caret`
+understands. The response vector must be a factor for classification, which is
+why all three `clean_x_type` vectors were created as factors.
 ```{r modelprep}
-CreateModelMatrix <- function(dtm) {
-  apply(as.matrix(dtm),
-        MARGIN = 2,
-        FUN = function(x) factor(ifelse(x > 0, 1L, 0L),
-                                 levels = c(0L, 1L),
-                                 labels = c("Not Found", "Found")))
-  }
-train_sp <- CreateModelMatrix(dtm_train)
-val_sp <- CreateModelMatrix(dtm_val)
-test_sp <- CreateModelMatrix(dtm_test)
+train_m <- as.matrix(dtm_train)
+val_m <- as.matrix(dtm_val)
+test_m <- as.matrix(dtm_test)
 ```
 
 ## Train Models
@@ -331,68 +329,101 @@ reduces code complexity and migraine propensity. Forgive us as well if we don't
 explain every family and every selection. Below we create the model matrices
 which will be passed to `caret`.
 
+Experimentation was done with many of the tunining parameters. However, most
+increases in accuracy came at an inordinate expense of time. Therefore, for the
+purposes of this exercise, many of the more advantageous options will be
+limited. For example, cross-validation will be limited to single-pass ten-fold.
+In production, one should be more vigorous, of course.
 
 ### Logistic Regression
+This is the classic good-old logistic regression in R. There are no hyper/tuning
+parameters, so the only comparison can be between the method of
+cross-validation.
 ```{r logistic, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 # 10-fold CV
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
                         summaryFunction = twoClassSummary)
-LogR1 <- train(x = train_sp, y = clean_train_type, method = "glm",
+LogR1 <- train(x = train_m, y = clean_train_type, method = "glm",
               family = "binomial", trControl = tr_ctrl, metric = "ROC")
 LogR1
-LogR1v <- predict(LogR1, val_sp)
+LogR1v <- predict(LogR1, val_m)
 confusionMatrix(LogR1v, clean_val_type)
 
-# 5 iterations of 5-fold CV
-tr_ctrl <- trainControl(method = "repeatedcv", number = 5L, repeats = 5L,
+# Monte-Carlo Cross validation using 75/25 and 5 iterations
+tr_ctrl <- trainControl(method = "LGOCV", number = 10L, p = 0.75,
                         classProbs = TRUE, summaryFunction = twoClassSummary)
-LogR2 <- train(x = train_sp, y = clean_train_type, method = "glm",
+LogR2 <- train(x = train_m, y = clean_train_type, method = "glm",
               family = "binomial", trControl = tr_ctrl, metric = "ROC")
 LogR2
-LogR2v <- predict(LogR2, val_sp)
+LogR2v <- predict(LogR2, val_m)
 confusionMatrix(LogR2v, clean_val_type)
 
-# Monte-Carlo Cross validation using 75/25 and 10 iterations
-tr_ctrl <- trainControl(method = "LGOCV", number = 5L, p = 0.75,
-                        classProbs = TRUE, summaryFunction = twoClassSummary)
-LogR3 <- train(x = train_sp, y = clean_train_type, method = "glm",
-              family = "binomial", trControl = tr_ctrl, metric = "ROC")
-LogR3
-LogR3v <- predict(LogR3, val_sp)
-confusionMatrix(LogR3v, clean_val_type)
-
 ```
 
-As all of the validation sets had the same performance, our selected model will
-be the simplest.
+Both versions performed the same on the validation set. As the first has a
+slightly better AUC (ROC here is the area under the curve) we will select
+that one.
 
-### Naive Bayes
-```{r naiveb, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
-# 10-fold CV
+### Random Forest
+The `ranger` package is used as the random forest engine due to its being
+optimized for higher dimensions. With 
+```{r rfA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
                         summaryFunction = twoClassSummary)
-NB1 <- train(x = train_sp, y = clean_train_type, method = "nb",
-             tuneGrid = expand.grid(fL = c(0, 0.5, 1),
-                                   usekernel = c(TRUE, FALSE),
-                                   adjust = c(0, 0.5, 1)),
-             trControl = tr_ctrl, metric = "ROC")
-NB1
-NB1v <- predict(NB1, val_sp)
-confusionMatrix(NB1v, clean_val_type)
-
-# Monte-Carlo Cross validation using 2:1 and 10 iterations
-tr_ctrl <- trainControl(method = "LGOCV", number = 5L, p = 0.75,
-                        classProbs = TRUE, summaryFunction = twoClassSummary)
-NB2 <- train(x = train_sp, y = clean_train_type, method = "nb",
-             tuneGrid = expand.grid(fL = c(0, 0.5, 1),
-                                   usekernel = c(TRUE, FALSE),
-                                   adjust = c(0, 0.5, 1)),
-             trControl = tr_ctrl, metric = "ROC")
-NB2
-NB2v <- predict(NB2, val_sp)
-confusionMatrix(NB2v, clean_val_type)
+RF1 <- train(x = train_m, y = clean_train_type, method = 'ranger',
+             trControl = tr_ctrl, metric = "ROC", tuneLength = 5L)
+RF1
+RF1v <- predict(RF1, val_m)
+confusionMatrix(RF1v, clean_val_type)
 ```
 
+As the best `mtry` value was close to 8, perhaps some more fine tuning can be
+done:
+```{r rfB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+rf_grid <- expand.grid(mtry = seq(1, 12),
+                       splitrule = c('gini', 'extratrees'),
+                       min.node.size = 1L)
+RF2 <- train(x = train_m, y = clean_train_type, method = 'ranger',
+             trControl = tr_ctrl, metric = "ROC", tuneGrid = rf_grid)
+RF2
+RF2v <- predict(RF2, val_m)
+confusionMatrix(RF2v, clean_val_type)                    
+```
+
+Interestingly, the first model performed better at validation even though the
+second had a higher AUC, so we will use that one. This may be an example of
+overfitting.
+
+### Naive Bayes
+```{r nbA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L,
+                        classProbs = TRUE, summaryFunction = twoClassSummary)
+NB1 <- train(x = train_m, y = clean_train_type, method = "nb",
+             trControl = tr_ctrl, metric = "ROC")
+NB1
+NB1v <- predict(NB1, val_m)
+confusionMatrix(NB1v, clean_val_type)
+```
+
+This is an *awfully* performing model. Maybe some tuning may help.
+```{r nbB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+nb_grid <- expand.grid(usekernel = c(TRUE, FALSE),
+                       fl = c(0, 0.33, 0.67, 1),
+                       adjust = c(0, 0.33, 0.67, 1))
+NB2 <- train(x = train_m, y = clean_train_type, method = "nb",
+             trControl = tr_ctrl, metric = "ROC", tuneGrid = nb_grid)
+NB1
+```
+```{r GBM, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "repeatedcv", number = 10L, repeats = 10L,
+                        classProbs = TRUE, summaryFunction = twoClassSummary)
+tgrid <- expand.grid(n.trees = 100,
+                     interaction.depth = 1,
+                     shrinkage = 0.1,
+                     n.minobsinnode = 1)
+GBM1 <- train(x = train_sp, y = clean_train_type, method = "gbm",
+              trControl = tr_ctrl, tuneGrid = tgrid, metric = "ROC")
+```
 # Epilogue
 ```{r epilogue}
 sessionInfo()
