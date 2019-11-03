@@ -381,7 +381,7 @@ slightly better F-score, we will select that one.
 
 ### Random Forest
 The `ranger` package is used as the random forest engine due to its being
-optimized for higher dimensions. With 
+optimized for higher dimensions.
 ```{r rfA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
                         summaryFunction = prSummary)
