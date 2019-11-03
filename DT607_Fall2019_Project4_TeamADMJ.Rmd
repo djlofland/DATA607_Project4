@@ -404,6 +404,9 @@ RF2v <- predict(RF2, val_m)
 confusionMatrix(RF2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
+Interestingly, the first model performed better on the validation set despite
+performing more poorly on the training set. Possibly an example of overfitting.
+
 ### Naive Bayes
 ```{r nbA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
