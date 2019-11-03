@@ -458,6 +458,9 @@ NN2v <- predict(NN2, val_m)
 confusionMatrix(NN2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
+Both models performed the same on the validation set. As the second performed
+better on the training set too, we will use it.
+
 ### Gradient Boosted Machines
 ```{r GBM1, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
@@ -483,9 +486,12 @@ GBM2v <- predict(GBM2, val_m)
 confusionMatrix(GBM2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
+The second model performed better.
+
 ### Other models
 With over 230 possible models, there are many more options to train, like
-XGBoost, Neural Networks, Bayesian Regression, Support Vector Machines, etc.
+XGBoost, Neural Networks, Bayesian Regression, Support Vector Machines, etc. We
+don't need to exhaust the possibilities here.
 
 ## Test Models
 The best models in the above categories will now be compared against the
@@ -493,7 +499,7 @@ testing/holdout set:
 ```{r test, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
 LogRt <- predict(LogR1, test_m)
 RFt <- predict(RF1, test_m)
-NNt <- predict(NN1, test_m)
+NNt <- predict(NN2, test_m)
 NBt <- predict(NB2, test_m) # For laughs
 GBMt <- predict(GBM2, test_m)
 confusionMatrix(LogRt, clean_test_type, mode = "prec_recall", positive = "spam")
@@ -505,8 +511,8 @@ confusionMatrix(GBMt, clean_test_type, mode = "prec_recall", positive = "spam")
 
 From these models, while the logistic had no false negatives---a recall of 1---it
 did so by coding 57 good emails as spam. The remaining models all did quite well,
-but the winner is the random forest model, with the highest F-score and fewest
-miscategorized emails of any type.
+but the winner is the **random forest** model, with the highest F-score and
+fewest miscategorized emails of any type.
 
 # Epilogue
 ```{r epilogue}
