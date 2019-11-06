@@ -461,7 +461,7 @@ NB2v <- predict(NB2, val_m)
 confusionMatrix(NB2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
-Results are still **miserable**. Maybe this wasn't used properly.
+Results are still **miserable**. Naive Bayes also assumes Independence between all features - with engligh text, words/terms are likely to have correlations thus violating the core assumption of Naive Bayes  Since our current terms also include HTML tags and HTML terms, there are going to be huge correlations between terms we have selected.  Naive Bayes would probably perform significantly better if we stipped all HTML terms and made a pass on reducing features by looking for correlations.
 
 #### Feature importance
 Which terms had the most influence on ham/spam classification using Naive Bayes?
@@ -568,6 +568,17 @@ From these models, while the logistic had no false negatives---a recall of 1---i
 did so by coding 57 good emails as spam. The remaining models all did quite well,
 but the winner is the **random forest** model, with the highest F-score and
 fewest miscategorized emails of any type.
+
+# Discussion
+## Feature Engineering Ideas
+- Possibly add a boolean feature indicating whether the email contained a URL
+- Possibly add a boolean feature whether there were any HTML markup in the email
+- Possibly limit terms to raw text and/or drop any HTML terms in the word list
+- Possibly include the Subject line as the first row of the email
+- Use Correlation matrices to identify auto-correlation between words and remove unnecessary terms.
+
+## Email over Time
+The email corpus is from the early 2000's at a time when HTML email was less prevalent between users such that the presence of HTML markup might have strong correlation with being viewed as spam.  15 years later, HTML markup in email messages is supported by most email clients and very common.  We suspect that a spam classifer built using the old corpus would in fact perform very poorly with email from today.  We would want to retrain our models ensuring tht HTML markup played no component in classifying spam/ham (ie classify on raw text alone), then when applied to a current corpus, ensure that we only include the raw text extracted from email messages.
 
 # Epilogue
 ```{r epilogue}
