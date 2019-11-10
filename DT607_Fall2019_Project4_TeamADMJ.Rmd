@@ -67,14 +67,24 @@ packages uses `camelCase` for its functions. wE aPoLoGIze fOr anY IncoNVenIence.
 
 ### Load Libraries and Set Seed
 ```{r loadLibraries, message=FALSE}
+# allows us to repeat analysis with same outcomes
 set.seed(12)
-library(doParallel)
-cl <- makePSOCKcluster(6L)
+
+# Enable parallel processing to speed up code
+library(doParallel)    # library to enable parallel processing to leverage multiple CPU's & Cores
+num_cores <- detectCores() - 1
+
+#registerDoParallel(cores=num_cores)  
+cl <- makeCluster(num_cores, type="FORK")
+
+#cl <- makePSOCKcluster(6L)
 registerDoParallel(cl)
-library(tm)
-library(SnowballC)
-library(caret)
-library(wordcloud)
+
+library(tm)            # tool to facilitate building corpus of data
+library(SnowballC)     # tools to find word stems
+library(caret)         # tools to run machine learning
+library(wordcloud)     # tool to help build vidual wordclouds
+library(tidyverse)
 ```
 
 ### List files
@@ -82,11 +92,16 @@ The files were downloaded from the link above, and the `spam_2` and `easy_ham`
 sets were selected for analysis. These were unzipped so that each email is its
 own file in the directory.
 ```{r listFiles}
+# Get a list of all the spam file names (each file is a single email message)
 s_files <- list.files("./Data/spam_2", full.names = TRUE)
+s_len <- length(s_files)
+
+# Get a list of all the ham files names (each file is a single email message)
 h_files <- list.files("./Data/easy_ham", full.names = TRUE)
 h_len <- length(h_files)
-s_len <- length(s_files)
 ```
+
+We loaded `{r} s_len` spam email messages and `{r} h_len` ham (non-spam) email messages. The first thing to note is that we have an unbalanced data set with more good email messages (ham) than spam.  This may affect our choice of models and/or force us to take extra steps to accomodate the difference in set sizes.
 
 ## Building the Corpus
 ### Email Headers
@@ -105,16 +120,52 @@ In the headers, some information that could be used to enhance a model might inc
 The `readLines` function reads each line as a separate vector. To turn this into
 a single character vector, the `paste` function is used with the appropriate
 `sep` and `collapse` values. The class of the document is passed as a parameter
-to the `Build
+to the `BuildCorpus` function.
 
 ```{r rawCorpus}
-BuildCorpus <- function(files, class){
-  for (i in seq_along(files)) {
+#' Build a corpus from a list of file names
+#' 
+#' @param files List of documents to load.
+#' @param class The class to be applied to the loaded documents
+#' @return A charater vector
+BuildCorpus <- function(files, class) {
+  # loop thru files and process each one as we go
+  for (i in seq_along(files)) { 
     raw_text <- readLines(files[i])
     em_length <- length(raw_text)
-    body_start <- min(grep("^$", raw_text, fixed = FALSE)) + 1L
-    em_body <- paste(raw_text[body_start:em_length],
-                     sep = "", collapse = " ")
+    
+    # Lets extract the Subject line (if present) and clean it   
+    subject_line <- str_extract(raw_text, "^Subject: (.*)$")
+    subject_line <- subject_line[!is.na(subject_line)]
+    subject_line <- iconv(subject_line, to="UTF-8")
+    
+    # let's scrub / clean up the subject line text
+    subject_line <- gsub("[^0-9A-Za-z///' ]","" , subject_line, ignore.case = TRUE, useBytes = TRUE)
+    subject_line <- tolower(subject_line)
+    subject_line <- str_replace_all(subject_line, "(\\[)|(\\])|(re )|(subject )", "")
+
+    # Lets extract the email body content
+    body_start <- min(grep("^$", raw_text, fixed = FALSE, useBytes = TRUE)) + 1L
+    em_body <- paste(raw_text[body_start:em_length], sep="", collapse=" ")
+    em_body <- iconv(em_body, to="UTF-8")
+    
+    # make the text lower case
+    em_body <- tolower(em_body)
+        
+    # remove HTML tags
+    em_body <- str_replace_all(em_body, "(<[^>]*>)", "")
+    em_body <- str_replace_all(em_body, "(&.*;)", "")
+
+    # remove any URL's
+    em_body <- str_replace_all(em_body, "http(s)?:(.*) ", " ")
+
+    # remove non alpha (leave lower case and apostrophe for contractions)
+    em_body <- str_replace_all(em_body, "[^a-z///' ]", "")
+    em_body <- str_replace_all(em_body, "''|' ", "")
+
+    # Since the subject line might have important info, lets concatenate it to the top of the email body
+    em_body <- paste(c(subject_line, em_body), sep="", collapse=" ")
+    
     if (i == 1L) {
       ret_Corpus <- VCorpus(VectorSource(em_body))
     } else {
@@ -122,7 +173,9 @@ BuildCorpus <- function(files, class){
       ret_Corpus <- c(ret_Corpus, tmp_Corpus)
     }
   }
+  
   meta(ret_Corpus, tag = "class", type = "indexed") <- class
+  
   return(ret_Corpus)
 }
 
@@ -149,19 +202,46 @@ wordStem(c('run', 'running', 'ran', 'runt'), language = 'porter')
 The complete cleaning rules are in the `CleanCorpus` function.
 ```{r cleanCorpus}
 # https://stackoverflow.com/questions/47410866/r-inspect-document-term-matrix-results-in-error-repeated-indices-currently-not
+#' Scrub the text in a corpus
+#' @param corpus A text corpus prepared by tm
+#' @return A sanitized corpus
 CleanCorpus <- function(corpus){
   overused_words <- c("ok", 'okay', 'day', "might", "bye", "hello", "hi",
                       "dear", "thank", "you", "please", "sorry")
-  StripURL <- function(x) {gsub("(http[^ ]*)|(www\\.[^ ]*)", "", x)}
+
+  # lower case everything
   corpus <- tm_map(corpus, content_transformer(tolower))
+  
+  # remove any HTML markup
+  removeHTMLTags <- function(x) {gsub("(<[^>]*>)", "", x)}
+  corpus <- tm_map(corpus, content_transformer(removeHTMLTags))
+
+  # remove any URL's
+  StripURL <- function(x) {gsub("(http[^ ]*)|(www\\.[^ ]*)", "", x)}
   corpus <- tm_map(corpus, content_transformer(StripURL))
+  
+  # remove anything not a simple letter
+  KeepAlpha <- function(x) {gsub("[^a-z///-///' ]", "", x, ignore.case = TRUE, useBytes = TRUE)}
+  corpus <- tm_map(corpus, content_transformer(KeepAlpha))
+
+  # remove any numbers
   corpus <- tm_map(corpus, removeNumbers)
+  
+  # remove punctuation
   corpus <- tm_map(corpus, removePunctuation,
                    preserve_intra_word_contractions = TRUE,
                    preserve_intra_word_dashes = TRUE)
-  corpus <- tm_map(corpus, removeWords, c(stopwords("english"), overused_words))
+  
+  # remove any stop words
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, removeWords, overused_words)
+  
+  # remove extra white space
   corpus <- tm_map(corpus, stripWhitespace)
+  
+  # use the SnowballC stem algorithm to find the root stem of similar words
   corpus <- tm_map(corpus, stemDocument)
+  
   return(corpus)
 }
 ```
@@ -199,47 +279,63 @@ possible, they are compared with each other by their performance on the
 heretofore unused testing/holdout set. The `SplitSample` function was used to
 split the data at the start.
 ```{r splitsets}
-SplitSample <- function(n) {
-  if (n %% 4 == 0) {
-    n_split <- sample(c(rep("train", n / 2),
-                      rep("validate", n / 4),
-                      rep("test", n / 4)))
-  } else {
+# https://stackoverflow.com/questions/47410866/r-inspect-document-term-matrix-results-in-error-repeated-indices-currently-not
+#' Split a sample into Training, Validation and Test groups.  Return a vector with the label for each sample using 
+#' the provided probabilities.  Note: training, validation and test should be non-negative and, not all zero.
+#' @param n The total number of samples in the set
+#' @param n Desired training set size (percent)
+#' @param n Desired validation set size (percent)
+#' @param n Desired test set size (percent)
+#' @return A sanitized corpus
+SplitSample <- function(n, training=0.5, validation=0.25, test=0.25) {
+  if((training >= 0 && validation >= 0 && test >= 0) && 
+     ((training + validation + test) > 0) && 
+     ((training + validation + test) <= 1.0 )) {
     n_split <- sample(x = c("train", "validate", "test"), size = n,
                     replace = TRUE, prob = c(0.5, 0.25, 0.25))
+  } else {
+    n_split <- FALSE
   }
+  
+  return(n_split)
 }
+
+# build vectors that identify which group each sample will be placed (training, validation or test)
 h_split <- SplitSample(h_len)
 s_split <- SplitSample(s_len)
-
 ```
 
-Note that with machine learning, another popular approach is to setup **K-fold Cross Validation**.  With this approach, we create a Training/Testing split as shown above, train a model, then repeat the process with a different random Training/Testing splits.  By iterating (typically 5-10 times), we ensure that every observation has a chance of being included during Training or Testing.  We then average the performance metrics and use that to evaluate the model.  This helps reduce bias that might have been introduced by random chance with just a single Training/Testing split.  
+Note that with machine learning, another popular approach is to setup **K-fold Cross Validation**.  With this approach, we create a Training/Testing split as shown above, train a model, then repeat the process with a different random Training/Testing splits.  By iterating (typically 5-10 times), we ensure that every observation has a chance of being included during Training or Testing and can appear in any split group.  We then average the performance metrics and use that to evaluate the model.  This helps reduce bias that might have been introduced by random chance with just a single Training/Testing split.  
 
-If there are limited number of samples to work with, thus limiting the information available during the Training phase, it is common to compromise and use a 70%/30% or 80%/20% Training to Testing split and skip the Validation set.  If there are limited observations, *Bootstrapping* is one method for generating additional data and works well if the known samples provide sufficient reprentation of the expected distribution of possible values or datapoints.
+If there are limited number of samples to work with, thus limiting the information available during the training phase, it is common to compromise and use a 70%/30% or 80%/20% Training to Testing split and skip the third Validation set.  If there are limited observations, *Bootstrapping* is one method for generating additional data and works well if the known samples provide sufficient reprentation of the expected distribution of possible values or datapoints.
+
+When we have the possibility of multiple rows from the same source, there is the possibility of leakage between the training and test/validation sets such that the model performs better on the validation and/or test sets than expected.  We are not going to consider this now, but a more rigorous model would tag each row with the sender's email address and/or IP address and use `groupKFold()` or some other similar technique to ensures all rows from a given sender are kept together in the same data set (trainng, validation or test).  See [https://topepo.github.io/caret/data-splitting.html](https://topepo.github.io/caret/data-splitting.html) for more information. Note that this approach can lead to complexity ... for further discussion, see [https://towardsdatascience.com/the-story-of-a-bad-train-test-split-3343fcc33d2c](https://towardsdatascience.com/the-story-of-a-bad-train-test-split-3343fcc33d2c).
 
 ### Building the Term List
-As both training and validation are part of the model construction, we feel that
-the term list can be built from the combination of the two. The terms in the 
-testing/holdout set will not be seen prior to testing. We will restrict the
-word list to words that appear in at least 100 of the combined
-`r (h_len + s_len) * 0.75` documents.
+As both training and validation are part of the model construction, we feel that the term list can be built from the combination of the two. The terms in the testing/holdout set will not be seen prior to testing. We will restrict the word list to words that appear in at least 100 of the combined `r (h_len + s_len) * 0.75` documents.  In a real world scenario, email messages may contain new terms not seen suring the training steps.  By excluding the final validation terms, we better simulate a realworld implementation where new words are appearing that we didn't have available during model training
 ```{r toptermlist}
+# pull all terms from the training sets (both hame and spam)
 raw_train <- c(h_corp_raw[h_split == "train"],
                s_corp_raw[s_split == "train"])
+
+# pull all terms from the validation sets (both hame and spam)
 raw_val <- c(h_corp_raw[h_split == "validate"],
              s_corp_raw[s_split == "validate"])
+
+# pull all terms from the test sets (both hame and spam)
 raw_test <- c(h_corp_raw[h_split == "test"],
-              s_corp_raw[s_split == "train"])
+              s_corp_raw[s_split == "test"])
+
+# combine both training and test terms into a master list
 raw_term_corp <- c(raw_train, raw_val)
 clean_term_corp <- CleanCorpus(raw_term_corp)
-dtm_terms <- DocumentTermMatrix(clean_term_corp, control = list(
-  bounds = list(global = c(100L, Inf))))
+
+dtm_terms <- DocumentTermMatrix(clean_term_corp, control = list(bounds = list(global = c(100L, Inf))))
+
 freq_terms <- Terms(dtm_terms)
 ```
 
-Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we will use
-in the dictionary:
+Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we will use in the dictionary:
 ```{r freqTerms}
 ft <- colSums(as.matrix(dtm_terms))
 ft_df <- data.frame(term = names(ft), count = as.integer(ft))
@@ -461,7 +557,7 @@ NB2v <- predict(NB2, val_m)
 confusionMatrix(NB2v, clean_val_type, mode = "prec_recall", positive = "spam")
 ```
 
-Results are still **miserable**. Naive Bayes also assumes Independence between all features - with engligh text, words/terms are likely to have correlations thus violating the core assumption of Naive Bayes  Since our current terms also include HTML tags and HTML terms, there are going to be huge correlations between terms we have selected.  Naive Bayes would probably perform significantly better if we stipped all HTML terms and made a pass on reducing features by looking for correlations.
+Results are still **miserable**. Naive Bayes also assumes **Independence** between all features - with engligh text, words/terms are likely to have correlations thus violating the core assumption of Naive Bayes.  Since our current terms also some leakage of HTML tags and attributes, there are going to be correlations between terms we have selected.  Naive Bayes would probably perform significantly better if we stipped all HTML terms and made a pass on reducing features by looking for correlations.
 
 #### Feature importance
 Which terms had the most influence on ham/spam classification using Naive Bayes?
@@ -570,15 +666,24 @@ but the winner is the **random forest** model, with the highest F-score and
 fewest miscategorized emails of any type.
 
 # Discussion
-## Feature Engineering Ideas
-- Possibly add a boolean feature indicating whether the email contained a URL
+
+With our initial pass on this project, we did NOT remove HTML from email messages and as a consequence, HTML tags and attribute names and values became "words" or "terms" used by our models to help resolve SPAM vs HAM.  Interestingly, our models performed significantly better and the HTML terms and attribute ended up being the most important features used as criteria by models.  After seeing this, we modified our email cleaning to actively remove HTML markup.  Our model perform dropped ~10% across all models without HTML.  This suggests that the very presense of HTML markup in the corpus is a feature associated with and predictive of SPAM.  
+
+The email corpus is from the early 2000's at a time when most email clients did NOT use HTML markup by default, so most HAM would *NOT* have included much if any HTML.  SPAM on the other hand often included HTML links and images intended to draw the recipient to a website or email address where they could buy something.
+
+While the presense of HTML was an indicator of SPAM in the early 2000's, we suspect that models trained with HTML would perform poorly today as most email clients routinely use HTML markup for text formating, shared links and images.  For this reason, we chose to remove the HTML and try training a model on only the email text, as that might perform better over time.
+
+Note that whlie we tried to remove HTML markup, when we inspect the terms, we still see some words that look suspiciouly like HTML, for example, "contenttype".  This may suggest some leakage of HTML that we missed during scrubbing. 
+
+If you inspect the terms, you may note missing trailing characters.  This is not a bug, but rather part of the word stem approach to simplifying the word list by finding similar words.  For example, "run", "running", "runs", "runner" all have the same base "run".  The SnowballC package drops the endings so all the variants collapse to the same word root.
+
+If we really wanted to expand this project, some additional features we might include beyond the word list:
+
+- Possibly add a boolean feature indicating whether the email contained any URL's
 - Possibly add a boolean feature whether there were any HTML markup in the email
-- Possibly limit terms to raw text and/or drop any HTML terms in the word list
-- Possibly include the Subject line as the first row of the email
 - Use Correlation matrices to identify auto-correlation between words and remove unnecessary terms.
 
-## Email over Time
-The email corpus is from the early 2000's at a time when HTML email was less prevalent between users such that the presence of HTML markup might have strong correlation with being viewed as spam.  15 years later, HTML markup in email messages is supported by most email clients and very common.  We suspect that a spam classifer built using the old corpus would in fact perform very poorly with email from today.  We would want to retrain our models ensuring tht HTML markup played no component in classifying spam/ham (ie classify on raw text alone), then when applied to a current corpus, ensure that we only include the raw text extracted from email messages.
+Since email language and markup changes over time, and spammers are constantly changing their email to get past spam filters, any model built to separate HAM vs SPAM will probably need to be constantly retrained.  
 
 # Epilogue
 ```{r epilogue}
