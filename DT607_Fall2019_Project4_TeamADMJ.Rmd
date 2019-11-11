@@ -129,6 +129,7 @@ to the `BuildCorpus` function.
 #' @param class The class to be applied to the loaded documents
 #' @return A charater vector
 BuildCorpus <- function(files, class) {
+
   # loop thru files and process each one as we go
   for (i in seq_along(files)) { 
     raw_text <- readLines(files[i])
@@ -660,14 +661,11 @@ confusionMatrix(NBt, clean_test_type, mode = "prec_recall", positive = "spam")
 confusionMatrix(GBMt, clean_test_type, mode = "prec_recall", positive = "spam")
 ```
 
-From these models, while the logistic had no false negatives---a recall of 1---it
-did so by coding 57 good emails as spam. The remaining models all did quite well,
-but the winner is the **random forest** model, with the highest F-score and
-fewest miscategorized emails of any type.
+Looking across all models, Naive Bayes performed quite poorly while the remaining models all did quite well, but the winner is the **gradient boosted** model, with the highest F-score and fewest miscategorized emails of any type.
 
 # Discussion
 
-With our initial pass on this project, we did NOT remove HTML from email messages and as a consequence, HTML tags and attribute names and values became "words" or "terms" used by our models to help resolve SPAM vs HAM.  Interestingly, our models performed significantly better and the HTML terms and attribute ended up being the most important features used as criteria by models.  After seeing this, we modified our email cleaning to actively remove HTML markup.  Our model perform dropped ~10% across all models without HTML.  This suggests that the very presense of HTML markup in the corpus is a feature associated with and predictive of SPAM.  
+With our initial pass on this project, we did NOT remove HTML from email messages and as a consequence, HTML tags and attribute names and values became "words" or "terms" used by our models to help resolve SPAM vs HAM.  Interestingly, our models performed significantly better and the HTML terms and attribute ended up being the most important features used as criteria by models.  After seeing this, we modified our email cleaning to actively remove HTML markup.  Our model perform dropped ~7% across all models without HTML.  This suggests that the very presense of HTML markup in the corpus is a feature associated with and predictive of SPAM.   
 
 The email corpus is from the early 2000's at a time when most email clients did NOT use HTML markup by default, so most HAM would *NOT* have included much if any HTML.  SPAM on the other hand often included HTML links and images intended to draw the recipient to a website or email address where they could buy something.
 
