@@ -74,10 +74,13 @@ set.seed(12)
 library(doParallel)    # library to enable parallel processing to leverage multiple CPU's & Cores
 num_cores <- detectCores() - 1
 
-#registerDoParallel(cores=num_cores)  
-cl <- makeCluster(num_cores, type="FORK")
+# Note that PC's , Mac and Linux need difference calls to kick off multiprocessors
+if(Sys.info()['sysname'] == 'Windows') {
+  cl <- makePSOCKCluster(num_cores, type="FORK")
+} else {
+  cl <- makeCluster(num_cores, type="FORK")
+}
 
-#cl <- makePSOCKcluster(6L)
 registerDoParallel(cl)
 
 library(tm)            # tool to facilitate building corpus of data
