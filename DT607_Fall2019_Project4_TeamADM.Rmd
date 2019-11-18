@@ -1,0 +1,785 @@
+---
+title: "DT 607---Fall 2019---Project 4---Spam/Ham Classification"
+author: "Team ADM - Avraham Adler, Donny Lofland, Michael Yampol"
+date: "11/17/2019"
+output:
+  pdf_document:
+    md_extensions: +grid_tables
+    toc: yes
+    toc_depth: 3
+    keep_md: yes
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    code_folding: show
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+    md_extensions: +grid_tables
+    keep_md: yes
+classoption: portrait
+editor_options:
+  chunk_output_type: inline
+header-includes: 
+- \usepackage{graphicx}
+- \usepackage{float}
+---
+
+<style>
+  .main-container {
+    max-width: 1200px !important;
+  }
+</style>
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale("LC_ALL", "C")
+```
+
+
+***
+\newpage
+# Assignment
+It can be useful to be able to classify new "test" documents using already
+classified "training" documents.  A common example is using a corpus of labeled
+spam and ham (non-spam) e-mails to predict whether or not a new document is spam.  
+
+For this project, you can start with a spam/ham data-set, then predict the class
+of new documents (either withheld from the training data-set or from another
+source such as your own spam folder). One example corpus:
+https://spamassassin.apache.org/old/publiccorpus/
+
+# Solution
+## Overview
+### Executive Summary
+The `tm` package will be used to create a corpus of data which will serve as the
+source of features and observations for the analysis. This will then be
+converted into a document-term matrix. Finally, The `caret` package will be used
+for the model fitting, validation, and testing.
+
+The process of building a ham/spam filter is an oft-used pedagogical tool when
+teaching predictive modeling. Therefore, there is a multitude of information
+available on-line and in texts, of which we availed ourselves.
+
+It should be noted that one of the more common packages in recent use for text
+mining, the `RTextTools` package was recently removed from CRAN, and personal
+communication by one of us with the author (who is now building the news feed at 
+[LinkedIn](https://www.linkedin.com/in/timjurka/)) confirmed that the package
+is abandonware.
+
+Lastly, we understand that the object of this exercise is not to build an
+excellent predictor but to demonstrate the necessary knowledge required to build
+classification algorithms.
+
+### Document-Term Matrix
+A document-term matrix (DTM) is the model matrix used in natural language
+processing (NLP). Its rows represent the documents in the corpus and its columns
+represent the selected terms or tokens which are treated as features. The values
+in each cell depends on the weighting schema selected. The simplest is
+*term-frequency* (tf). This is just the number of times the word is found in
+that document. A more sophisticated weighting scheme is *term frequency–inverse*
+*document frequency* (tf-idf). This measure increases with the frequency of the
+term, but offsets it by the number of documents in which it appears. This will
+lower the predictive power of words that naturally appear very often in all
+kinds of documents, and so do not shed much light on the type of document. This
+problem is also addressed by removing words so common as to have no predictive
+power at all like "and" or "the". These are often called *stop words*.
+
+
+***
+\newpage
+## Code and Process
+### Style
+In the following document, all user-created variables will be in `snake_case`
+and all user-created functions will be in `CamelCase`. Unfortunately, the `tm`
+packages uses `camelCase` for its functions. wE aPoLoGIze fOr anY IncoNVenIence.
+
+### Load Libraries and Set Seed
+```{r loadLibraries, message=FALSE}
+# allows us to repeat analysis with same outcomes
+set.seed(12)
+
+# Enable parallel processing to speed up code
+library(doParallel)    # library to enable parallel processing to leverage multiple CPU's & Cores
+num_cores <- detectCores() - 1
+
+# Note that PCs , Mac and Linux need different calls to kick off multiprocessors
+if(Sys.info()['sysname'] == 'Windows') {
+  cl <- makePSOCKcluster(num_cores, type="FORK")
+} else {
+  cl <- makeCluster(num_cores, type="FORK")
+}
+
+registerDoParallel(cl)
+
+library(tm)            # tool to facilitate building corpus of data
+library(SnowballC)     # tools to find word stems
+library(caret)         # tools to run machine learning
+library(wordcloud)     # tool to help build vidual wordclouds
+library(tidyverse)
+```
+
+### List files
+The files were downloaded from the link above, and the `spam_2` and `easy_ham`
+sets were selected for analysis. These were unzipped so that each email is its
+own file in the directory.
+```{r listFiles}
+# Get a list of all the spam file names (each file is a single email message)
+s_files <- list.files("./Data/spam_2", full.names = TRUE)
+s_len <- length(s_files)
+
+# Get a list of all the ham files names (each file is a single email message)
+h_files <- list.files("./Data/easy_ham", full.names = TRUE)
+h_len <- length(h_files)
+```
+
+We loaded `{r} s_len` spam email messages and `{r} h_len` ham (non-spam) email messages. The first thing to note is that we have an unbalanced data set with more good email messages (ham) than spam.  This may affect our choice of models and/or force us to take extra steps to accomodate the difference in set sizes.
+
+
+***
+\newpage
+## Building the Corpus
+### Email Headers
+We will be focusing on email content, and not the meta information or doing
+reverse DNS lookups. Therefore, it makes sense to remove the email headers.
+According to the most recent RFC about email,
+[RFC 5322, Section 2.2](https://tools.ietf.org/html/rfc5322), the header should
+not contain any purely blank lines. Therefore, it is a very reasonable approach
+to look for the first blank line and only start ingesting the email from the
+next line. That is what is searched for by the regex pattern `"^$"` in the
+function below.
+
+In the headers, some information that could be used to enhance a model might include: the Subject line, sender's email address domain name (e.g. @gmail.com, @companyname.com, etc), whether the sender's email domain matches the sender's SMTP server domain name, the hour (UTC) when the email was sent, the origin country (based on SMTP server name or IP address lookup), and potentially information about the originating domain name (e.g. when was he domain registered).  If this was a critical project, we could also download RBL (realtime blakc lists) and use that information to provide additional pattern matching.
+
+### Raw Corpus
+The `readLines` function reads each line as a separate vector. To turn this into
+a single character vector, the `paste` function is used with the appropriate
+`sep` and `collapse` values. The class of the document is passed as a parameter
+to the `BuildCorpus` function.
+
+```{r rawCorpus}
+#' Build a corpus from a list of file names
+#' 
+#' @param files List of documents to load.
+#' @param class The class to be applied to the loaded documents
+#' @return A charater vector
+BuildCorpus <- function(files, class) {
+
+  # loop thru files and process each one as we go
+  for (i in seq_along(files)) { 
+    raw_text <- readLines(files[i])
+    em_length <- length(raw_text)
+    
+    # Lets extract the Subject line (if present) and clean it   
+    subject_line <- str_extract(raw_text, "^Subject: (.*)$")
+    subject_line <- subject_line[!is.na(subject_line)]
+# Note that PCs do not need this
+    if(Sys.info()['sysname'] != 'Windows') {
+      subject_line <- iconv(subject_line, to="UTF-8")
+    }
+    
+    # let's scrub / clean up the subject line text
+    subject_line <- gsub("[^0-9A-Za-z///' ]","" , subject_line, ignore.case = TRUE, useBytes = TRUE)
+    subject_line <- tolower(subject_line)
+    subject_line <- str_replace_all(subject_line, "(\\[)|(\\])|(re )|(subject )", "")
+
+    # Lets extract the email body content
+    body_start <- min(grep("^$", raw_text, fixed = FALSE, useBytes = TRUE)) + 1L
+    em_body <- paste(raw_text[body_start:em_length], sep="", collapse=" ")
+# Note that PCs do not need this
+    if(Sys.info()['sysname'] != 'Windows') {
+      em_body <- iconv(em_body, to="UTF-8")
+    }
+    # make the text lower case
+    em_body <- tolower(em_body)
+        
+    # remove HTML tags
+    em_body <- str_replace_all(em_body, "(<[^>]*>)", "")
+    em_body <- str_replace_all(em_body, "(&.*;)", "")
+
+    # remove any URL's
+    em_body <- str_replace_all(em_body, "http(s)?:(.*) ", " ")
+
+    # remove non alpha (leave lower case and apostrophe for contractions)
+    em_body <- str_replace_all(em_body, "[^a-z///' ]", "")
+    em_body <- str_replace_all(em_body, "''|' ", "")
+
+    # Since the subject line might have important info, lets concatenate it to the top of the email body
+    em_body <- paste(c(subject_line, em_body), sep="", collapse=" ")
+    
+    if (i == 1L) {
+      ret_Corpus <- VCorpus(VectorSource(em_body))
+    } else {
+      tmp_Corpus <- VCorpus(VectorSource(em_body))
+      ret_Corpus <- c(ret_Corpus, tmp_Corpus)
+    }
+  }
+  
+  meta(ret_Corpus, tag = "class", type = "indexed") <- class
+  
+  return(ret_Corpus)
+}
+
+h_corp_raw <- BuildCorpus(h_files, "ham")
+s_corp_raw <- BuildCorpus(s_files, "spam")
+```
+
+
+***
+\newpage
+### Cleaning the Corpus
+We used many of the default cleaning tools in the `tm` package to perform
+standard adjustments like lower-casing, removing numbers, etc. We made two
+non-native adjustments. First we stripped out anything that looked like a URL.
+This needed to be done prior to removing punctuation, of course. We also added a
+few words to the removal list which we think have little predictive power due to
+their overuse. We considered removing all punctuation, but decided to leave both
+intra-word contractions and internal punctuation.
+
+Lastly, we used the `SnowballC` package to stem the document. This process
+tries to identify common roots shared by similar words and then treat them as
+one. For example:
+```{r stem}
+wordStem(c('run', 'running', 'ran', 'runt'), language = 'porter')
+```
+
+The complete cleaning rules are in the `CleanCorpus` function.
+```{r cleanCorpus}
+# https://stackoverflow.com/questions/47410866/r-inspect-document-term-matrix-results-in-error-repeated-indices-currently-not
+#' Scrub the text in a corpus
+#' @param corpus A text corpus prepared by tm
+#' @return A sanitized corpus
+CleanCorpus <- function(corpus){
+  overused_words <- c("ok", 'okay', 'day', "might", "bye", "hello", "hi",
+                      "dear", "thank", "you", "please", "sorry")
+
+  # lower case everything
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  
+  # remove any HTML markup
+  removeHTMLTags <- function(x) {gsub("(<[^>]*>)", "", x)}
+  corpus <- tm_map(corpus, content_transformer(removeHTMLTags))
+
+  # remove any URL's
+  StripURL <- function(x) {gsub("(http[^ ]*)|(www\\.[^ ]*)", "", x)}
+  corpus <- tm_map(corpus, content_transformer(StripURL))
+  
+  # remove anything not a simple letter
+  KeepAlpha <- function(x) {gsub("[^a-z///-///' ]", "", x, ignore.case = TRUE, useBytes = TRUE)}
+  corpus <- tm_map(corpus, content_transformer(KeepAlpha))
+
+  # remove any numbers
+  corpus <- tm_map(corpus, removeNumbers)
+  
+  # remove punctuation
+  corpus <- tm_map(corpus, removePunctuation,
+                   preserve_intra_word_contractions = TRUE,
+                   preserve_intra_word_dashes = TRUE)
+  
+  # remove any stop words
+  corpus <- tm_map(corpus, removeWords, stopwords("english"))
+  corpus <- tm_map(corpus, removeWords, overused_words)
+  
+  # remove extra white space
+  corpus <- tm_map(corpus, stripWhitespace)
+  
+  # use the SnowballC stem algorithm to find the root stem of similar words
+  corpus <- tm_map(corpus, stemDocument)
+  
+  return(corpus)
+}
+```
+
+***
+\newpage
+### Removing Very Sparse Terms 
+Even with a cleaned corpus, the overwhelming majority of the terms are rare.
+There are two ways to address sparsity of terms in the `tm` package. The first
+is to generate a list of words that appear at least \(k\) times in the corpus.
+This is done using the `findFreqTerms` command. Then the document-term matrix
+(DTM) can be built using only those words.
+
+The second way is to build the DTM with all words, and then remove the words
+that don't appear in at least \(p\%\) of documents. This is done using the
+`removeSparseTerms` function in `tm`. Both methods make manual inspection of
+more than one line of the matrix impossible. The matrix is stored sparsely as a
+triplet, and once terms are removed, it becomes impossible for R to print
+properly.
+
+The `removeSparseTerms` is intuitively more appealing as it measures frequency
+by document, and not across documents. However, applying that to three separate
+corpuses would result in the validation and testing sets not having the same
+words as the training set. Therefore, the build-up method will be used, but used
+by finding the remaining terms after calling remove.
+
+However, before we do that, we need to discuss...
+
+
+***
+\newpage
+### Training, Validation, and Testing
+Hastie & Tibshirani, in their seminal work ESL, suggest breaking ones data into
+three parts: 50% training, 25% validation, and 25% testing. Confusingly, some
+literature uses "test" for the validation set and "holdout" for the test set.
+Regardless, the idea is that you train your model on 50% of the data, and use
+25% of the data (the validation set) to refine any hyper-parameters of the model.
+You do this for each model, and then once all the models are tuned as best
+possible, they are compared with each other by their performance on the
+heretofore unused testing/holdout set. The `SplitSample` function was used to
+split the data at the start.
+
+```{r splitsets}
+# https://stackoverflow.com/questions/47410866/r-inspect-document-term-matrix-results-in-error-repeated-indices-currently-not
+#' Split a sample into Training, Validation and Test groups.  
+#' Return a vector with the label for each sample using the provided probabilities.  
+#' Note: training, validation and test should be non-negative and, not all zero.
+#' @param n The total number of samples in the set
+#' @param n Desired training set size (percent)
+#' @param n Desired validation set size (percent)
+#' @param n Desired test set size (percent)
+#' @return A sanitized corpus
+SplitSample <- function(n, training=0.5, validation=0.25, test=0.25) {
+  if((training >= 0 && validation >= 0 && test >= 0) && 
+     ((training + validation + test) > 0) && 
+     ((training + validation + test) <= 1.0 )) {
+    n_split <- sample(x = c("train", "validate", "test"), size = n,
+                    replace = TRUE, prob = c(0.5, 0.25, 0.25))
+  } else {
+    n_split <- FALSE
+  }
+  
+  return(n_split)
+}
+
+# build vectors that identify which group each sample will be placed (training, validation or test)
+h_split <- SplitSample(h_len)
+s_split <- SplitSample(s_len)
+```
+
+Note that with machine learning, another popular approach is to setup **K-fold Cross Validation**.  With this approach, we create a Training/Testing split as shown above, train a model, then repeat the process with a different random Training/Testing splits.  By iterating (typically 5-10 times), we ensure that every observation has a chance of being included during Training or Testing and can appear in any split group.  We then average the performance metrics and use that to evaluate the model.  This helps reduce bias that might have been introduced by random chance with just a single Training/Testing split.  
+
+If there are limited number of samples to work with, thus limiting the information available during the training phase, it is common to compromise and use a 70%/30% or 80%/20% Training to Testing split and skip the third Validation set.  If there are limited observations, *Bootstrapping* is one method for generating additional data and works well if the known samples provide sufficient reprentation of the expected distribution of possible values or datapoints.
+
+When we have the possibility of multiple rows from the same source, there is the possibility of leakage between the training and test/validation sets such that the model performs better on the validation and/or test sets than expected.  We are not going to consider this now, but a more rigorous model would tag each row with the sender's email address and/or IP address and use `groupKFold()` or some other similar technique to ensures all rows from a given sender are kept together in the same data set (trainng, validation or test).  See [https://topepo.github.io/caret/data-splitting.html](https://topepo.github.io/caret/data-splitting.html) for more information. Note that this approach can lead to complexity ... for further discussion, see [https://towardsdatascience.com/the-story-of-a-bad-train-test-split-3343fcc33d2c](https://towardsdatascience.com/the-story-of-a-bad-train-test-split-3343fcc33d2c).
+
+
+***
+\newpage
+### Building the Term List
+As both training and validation are part of the model construction, we feel that the term list can be built from the combination of the two. The terms in the testing/holdout set will not be seen prior to testing. We will restrict the word list to words that appear in at least 100 of the combined `r (h_len + s_len) * 0.75` documents.  In a real world scenario, email messages may contain new terms not seen suring the training steps.  By excluding the final validation terms, we better simulate a realworld implementation where new words are appearing that we didn't have available during model training
+```{r toptermlist}
+# pull all terms from the training sets (both hame and spam)
+raw_train <- c(h_corp_raw[h_split == "train"],
+               s_corp_raw[s_split == "train"])
+
+# pull all terms from the validation sets (both hame and spam)
+raw_val <- c(h_corp_raw[h_split == "validate"],
+             s_corp_raw[s_split == "validate"])
+
+# pull all terms from the test sets (both hame and spam)
+raw_test <- c(h_corp_raw[h_split == "test"],
+              s_corp_raw[s_split == "test"])
+
+# combine both training and test terms into a master list
+raw_term_corp <- c(raw_train, raw_val)
+clean_term_corp <- CleanCorpus(raw_term_corp)
+
+dtm_terms <- DocumentTermMatrix(clean_term_corp, control = list(bounds = list(global = c(100L, Inf))))
+
+freq_terms <- Terms(dtm_terms)
+```
+
+Here are the top 20 stemmed terms out of the `r length(freq_terms)` terms we will use in the dictionary:
+```{r freqTerms}
+ft <- colSums(as.matrix(dtm_terms))
+ft_df <- data.frame(term = names(ft), count = as.integer(ft))
+knitr::kable(head(ft_df[order(ft, decreasing = TRUE), ], n = 20L),
+             row.names = FALSE)
+```
+
+Here is a histogram of word frequency using the
+[Freedman-Diaconis](https://en.wikipedia.org/wiki/Freedman%E2%80%93Diaconis_rule)
+rule for binwidth.
+```{r freqhist}
+bw_fd <- 2 * IQR(ft_df$count) / (dim(ft_df)[[1]]) ^ (1/3)
+ggplot(ft_df, aes(x = count)) + geom_histogram(binwidth = bw_fd) + xlab("Term")
+```
+
+Finally, a wordcloud of the stemmed terms appearing at least 250 times:
+```{r ftwc, message=FALSE, warning=FALSE, error=FALSE}
+wordcloud(ft_df$term,ft_df$count, scale = c(3, 0.6), min.freq = 250L,
+          colors = brewer.pal(5, "Dark2"), random.color = TRUE,
+          random.order = TRUE, rot.per = 0, fixed.asp = FALSE)
+```
+
+
+***
+\newpage
+### Building the Training Set
+```{r trainset}
+# sample is to randomize the observations
+clean_train <- sample(CleanCorpus(raw_train))
+clean_train_type <- unlist(meta(clean_train, tag = "class"))
+attributes(clean_train_type) <- NULL
+dtm_train <- DocumentTermMatrix(clean_train,
+                                control = list(dictionary = freq_terms))
+dtm_train
+```
+
+Compare the above with the sparsity of the cleaned training corpus without the
+limiting dictionary:
+```{r dtmcomp}
+dtm_train_S <- DocumentTermMatrix(clean_train)
+dtm_train_S
+```
+
+### Building the Validation Set
+```{r valset}
+clean_val <- sample(CleanCorpus(raw_val))
+clean_val_type <- unlist(meta(clean_val, tag = "class"))
+attributes(clean_val_type) <- NULL
+dtm_val <- DocumentTermMatrix(clean_val,
+                              control = list(dictionary = freq_terms))
+```
+
+### Building the Testing Set
+```{r testset}
+clean_test <- sample(CleanCorpus(raw_test))
+clean_test_type <- unlist(meta(clean_test, tag = "class"))
+attributes(clean_test_type) <- NULL
+dtm_test <- DocumentTermMatrix(clean_test,
+                              control = list(dictionary = freq_terms))
+```
+
+### Last step
+The `caret` package requires its input to be a numeric matrix. As the DTM is a
+special form of sparse matrix, we need to convert it to something `caret`
+understands. The response vector must be a factor for classification, which is
+why all three `clean_x_type` vectors were created as factors.
+```{r modelprep}
+train_m <- as.matrix(dtm_train)
+clean_train_type <- factor(clean_train_type, levels = c("spam", "ham"))
+val_m <- as.matrix(dtm_val)
+clean_val_type <- factor(clean_val_type, levels = c("spam", "ham"))
+test_m <- as.matrix(dtm_test)
+clean_test_type <- factor(clean_test_type, levels = c("spam", "ham"))
+```
+
+
+***
+\newpage
+## Train Models
+### Overview
+Now we can train the models. The process will generally follow the following
+path:
+
+  1. Select a model family (logistic regression, random forest, etc.)
+  2. Use the `caret` package on the training set to pick "best" model given the
+  supplied control, pre-processing, or other [hyper-]parameters. This may include
+  some level of validation
+  3. Switch the hyper-parameters, train again, and compare using validation set
+  4. Select "best" model from family
+  5. Repeat with other families
+  6. Compare performance of final selections using testing/holdout set
+  7. Take a well-deserved vacation
+  
+As the `caret` package serves as an umbrella for over 230 model types living in
+different packages, we may select a less-sophisticated version of a family if it
+reduces code complexity and migraine propensity. Forgive us as well if we don't
+explain every family and every selection. Below we create the model matrices
+which will be passed to `caret`.
+
+Experimentation was done with many of the tuning parameters. However, most
+increases in accuracy came at an inordinate expense of time. Therefore, for the
+purposes of this exercise, many of the more advantageous options will be
+limited. For example, cross-validation will be limited to single-pass ten-fold.
+In production, one should be more vigorous, of course.
+
+
+### Optimization Metric
+Usually, AUC, a function of ROC, is used for classification problems. However,
+for imbalanced data sets it is suggested to use one of precision, recall, or F1
+instead. See
+[here](https://towardsdatascience.com/accuracy-precision-recall-or-f1-331fb37c5cb9),
+[here](https://towardsdatascience.com/beyond-accuracy-precision-and-recall-3da06bea9f6c),
+or [here](https://acutecaretesting.org/en/articles/precision-recall-curves-what-are-they-and-how-are-they-used)
+for examples.
+
+In our case, the data set is imbalanced, and the cost of a false positive
+(classifying ham as spam) is greater than a false negative. Originally, we
+selected precision as the metric, as hitting the "junk" button for something in
+your inbox is less annoying than having your boss's email sit in your junk
+folder.
+
+However, as we trained models, we found some fascinating results. In one of the
+random forest models, the algorithm found a better model with one less false
+positive, at the expense of 61 more false negatives. Therefore, we decided to
+redo the tests using the balanced F1 as the optimization metric.
+
+
+***
+\newpage
+### Logistic Regression
+This is the classic good-old logistic regression in R. There are no hyper/tuning
+parameters, so the only comparison can be between the method of
+cross-validation.
+```{r logistic, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# 10-fold CV
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+LogR1 <- train(x = train_m, y = clean_train_type, method = "glm",
+              family = "binomial", trControl = tr_ctrl, metric = "F", model=TRUE)
+LogR1
+LogR1v <- predict(LogR1, val_m)
+confusionMatrix(LogR1v, clean_val_type, mode = "prec_recall", positive = "spam")
+
+# Monte-Carlo Cross validation using 75/25 and 5 iterations
+tr_ctrl <- trainControl(method = "LGOCV", number = 10L, p = 0.75,
+                        classProbs = TRUE, summaryFunction = prSummary)
+LogR2 <- train(x = train_m, y = clean_train_type, method = "glm",
+              family = "binomial", trControl = tr_ctrl, metric = "F", model=TRUE)
+LogR2
+LogR2v <- predict(LogR2, val_m)
+confusionMatrix(LogR2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+Both versions performed the same on the validation set. As the first has a
+slightly better F-score, we will select that one.
+
+
+***
+\newpage
+#### Feature importance
+Which terms had the most influence on ham/spam classification using Logistic Regression?
+```{r logistic-varImp, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# estimate variable importance
+importance <- varImp(LogR2)
+# summarize importance
+print(importance)
+```
+
+
+
+
+***
+\newpage
+### Random Forest
+The `ranger` package is used as the random forest engine due to its being
+optimized for higher dimensions.
+```{r rfA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+RF1 <- train(x = train_m, y = clean_train_type, method = 'ranger', importance = 'impurity',
+             trControl = tr_ctrl, metric = "F", tuneLength = 5L)
+RF1
+RF1v <- predict(RF1, newdata=val_m)
+confusionMatrix(RF1v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+
+Let's do a bit wider search among tuning parameters.
+```{r rfB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+rf_grid <- expand.grid(mtry = seq(8, 48, 4),
+                       splitrule = c('gini', 'extratrees'),
+                       min.node.size = c(1L, 10L))
+RF2 <- train(x = train_m, y = clean_train_type, method = 'ranger', importance = 'impurity',
+             trControl = tr_ctrl, metric = "F", tuneGrid = rf_grid)
+RF2
+RF2v <- predict(RF2, val_m)
+confusionMatrix(RF2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+Interestingly, the first model performed better on the validation set despite
+performing more poorly on the training set. Possibly an example of overfitting.
+
+
+***
+\newpage
+#### Feature importance
+Which terms had the most influence on ham/spam classification using Random Forest?
+```{r rf-varImp, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# estimate variable importance
+importance <- varImp(RF2)
+# summarize importance
+print(importance)
+```
+
+
+***
+\newpage
+### Naive Bayes
+```{r nbA, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+NB1 <- train(x = train_m, y = clean_train_type, method = "nb",
+             trControl = tr_ctrl, metric = "F")
+NB1
+NB1v <- predict(NB1, val_m)
+confusionMatrix(NB1v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+This is an *awfully* performing model. Naive Bayes is known to be very sensitive
+to class imbalances. Let's implement up-sampling and a wider search. 
+```{r nbB, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary, sampling = 'up')
+nb_grid <- expand.grid(usekernel = TRUE,
+                       fL = seq(0.25, 0.75, 0.05),
+                       adjust = 1)
+NB2 <- train(x = train_m, y = clean_train_type, method = "nb",
+             trControl = tr_ctrl, metric = "F", tuneGrid = nb_grid)
+NB2
+NB2v <- predict(NB2, val_m)
+confusionMatrix(NB2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+Results are still **miserable**. Naive Bayes also assumes **Independence** between all features - with engligh text, words/terms are likely to have correlations thus violating the core assumption of Naive Bayes.  Since our current terms also some leakage of HTML tags and attributes, there are going to be correlations between terms we have selected.  Naive Bayes would probably perform significantly better if we stipped all HTML terms and made a pass on reducing features by looking for correlations.
+
+
+***
+\newpage
+#### Feature importance
+Which terms had the most influence on ham/spam classification using Naive Bayes?
+```{r nbB-varImp, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# estimate variable importance
+importance <- varImp(NB2)
+# summarize importance
+print(importance)
+```
+
+
+***
+\newpage
+### Neural Network
+```{r NN1, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+
+NN1 <- train(x = train_m, y = clean_train_type, method = "nnet", trace = FALSE, 
+             trControl = tr_ctrl, metric = "F", tuneLength=5L, maxit = 250L)
+NN1
+NN1v <- predict(NN1, val_m)
+confusionMatrix(NN1v, clean_val_type, mode = "prec_recall", positive = "spam")
+
+```
+
+Some light tuning:
+
+```{r NN2, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+nn_grid <- expand.grid(size = 1L, decay = c(0.99, seq(0.95, 0.05, -0.05), 0.01))
+NN2 <- train(x = train_m, y = clean_train_type, method = "nnet", trace = FALSE,
+             trControl = tr_ctrl, metric = "F", tuneGrid = nn_grid,
+             maxit = 250L)
+NN2
+NN2v <- predict(NN2, val_m)
+confusionMatrix(NN2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+Both models performed the same on the validation set. As the second performed
+better on the training set too, we will use it.
+
+***
+\newpage
+#### Feature importance
+Which terms had the most influence on ham/spam classification using a Neural Network?
+```{r nn-varImp, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# estimate variable importance
+importance <- varImp(NN2)
+# summarize importance
+print(importance)
+```
+
+***
+\newpage
+### Gradient Boosted Machines
+```{r GBM1, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+tr_ctrl <- trainControl(method = "cv", number = 10L, classProbs = TRUE,
+                        summaryFunction = prSummary)
+GBM1 <- train(x = train_m, y = clean_train_type, method = "gbm", verbose = FALSE,
+              trControl = tr_ctrl, tuneLength = 5L, metric = "F")
+GBM1v <- predict(GBM1, val_m)
+confusionMatrix(GBM1v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+This model looks really good. Let's throw a little extra fine-tuning in. After
+running a wide-scale grid, the best option is selected below, so that the entire
+grid doesn't have to rerun every time.
+```{r GBM2, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+gbm_grid <- expand.grid(n.trees = 400L,
+                     interaction.depth = 7L,
+                     shrinkage = 0.1,
+                     n.minobsinnode = 10L)
+GBM2 <- train(x = train_m, y = clean_train_type, method = "gbm", verbose = FALSE,
+              trControl = tr_ctrl, tuneGrid = gbm_grid, metric = "F")
+GBM2
+GBM2v <- predict(GBM2, val_m)
+confusionMatrix(GBM2v, clean_val_type, mode = "prec_recall", positive = "spam")
+```
+
+The second model performed better.
+
+***
+\newpage
+#### Feature importance
+Which terms had the most influence on ham/spam classification using a Gradient Boosted Machines?
+```{r gbm-varImp, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+# estimate variable importance
+summary(GBM2)
+```
+
+### Other models
+With over 230 possible models, there are many more options to train, like
+XGBoost, Neural Networks, Bayesian Regression, Support Vector Machines, etc. We
+don't need to exhaust the possibilities here.
+
+***
+\newpage
+## Test Models
+The best models in the above categories will now be compared against the
+testing/holdout set:
+```{r test, message=FALSE, warning=FALSE, error=FALSE, cache=2L}
+LogRt <- predict(LogR1, test_m)
+RFt <- predict(RF1, newdata=test_m)
+NNt <- predict(NN2, test_m)
+NBt <- predict(NB2, test_m) # For laughs
+GBMt <- predict(GBM2, test_m)
+confusionMatrix(LogRt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(RFt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(NNt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(NBt, clean_test_type, mode = "prec_recall", positive = "spam")
+confusionMatrix(GBMt, clean_test_type, mode = "prec_recall", positive = "spam")
+```
+
+Looking across all models, Naive Bayes performed quite poorly while the remaining models all did quite well, but the winner is the **gradient boosted** model, with the highest F-score and fewest miscategorized emails of any type.
+
+***
+\newpage
+# Discussion
+
+With our initial pass on this project, we did NOT remove HTML from email messages and as a consequence, HTML tags and attribute names and values became "words" or "terms" used by our models to help resolve SPAM vs HAM.  Interestingly, our models performed significantly better and the HTML terms and attribute ended up being the most important features used as criteria by models.  After seeing this, we modified our email cleaning to actively remove HTML markup.  Our model perform dropped ~7% across all models without HTML.  This suggests that the very presense of HTML markup in the corpus is a feature associated with and predictive of SPAM.   
+
+The email corpus is from the early 2000's at a time when most email clients did NOT use HTML markup by default, so most HAM would *NOT* have included much if any HTML.  SPAM on the other hand often included HTML links and images intended to draw the recipient to a website or email address where they could buy something.
+
+While the presense of HTML was an indicator of SPAM in the early 2000's, we suspect that models trained with HTML would perform poorly today as most email clients routinely use HTML markup for text formating, shared links and images.  For this reason, we chose to remove the HTML and try training a model on only the email text, as that might perform better over time.
+
+Note that whlie we tried to remove HTML markup, when we inspect the terms, we still see some words that look suspiciouly like HTML, for example, "contenttype".  This may suggest some leakage of HTML that we missed during scrubbing. 
+
+If you inspect the terms, you may note missing trailing characters.  This is not a bug, but rather part of the word stem approach to simplifying the word list by finding similar words.  For example, "run", "running", "runs", "runner" all have the same base "run".  The SnowballC package drops the endings so all the variants collapse to the same word root.
+
+If we really wanted to expand this project, some additional features we might include beyond the word list:
+
+- Possibly add a boolean feature indicating whether the email contained any URL's
+- Possibly add a boolean feature whether there were any HTML markup in the email
+- Use Correlation matrices to identify auto-correlation between words and remove unnecessary terms.
+
+Since email language and markup changes over time, and spammers are constantly changing their email to get past spam filters, any model built to separate HAM vs SPAM will probably need to be constantly retrained.  
+
+***
+\newpage
+# Epilogue
+```{r epilogue}
+sessionInfo()
+stopCluster(cl)
+```
